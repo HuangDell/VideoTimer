@@ -398,18 +398,23 @@ class VideoStopwatch:
 
     def play_video_loop(self):
         """视频播放循环"""
+        # 确保从当前帧开始播放
+        if self.video_capture:
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+        
         while self.video_playing and self.video_capture:
             start_time = time.time()
 
-            # 确保视频定位到当前帧
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+            # 连续读取下一帧（不需要每次都设置帧位置）
             ret, frame = self.video_capture.read()
             if not ret:
                 # 视频播放完毕
                 self.root.after(0, self.on_video_finished)
                 break
 
-            self.current_frame += 1
+            # 获取实际读取到的帧号，确保准确性
+            actual_frame = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+            self.current_frame = actual_frame
 
             # 在主线程中更新显示
             self.root.after(0, self.update_video_display, frame)
