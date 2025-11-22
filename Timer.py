@@ -12,10 +12,12 @@ import math
 
 
 class VideoStopwatch:
-    def __init__(self):
+    def __init__(self, instance_id=1, record_key='z'):
+        self.instance_id = instance_id
         self.root = tk.Tk()
-        self.root.title("视频计时器 - Video Timer")
+        self.root.title(f"视频计时器 - Video Timer (实例 {instance_id})")
         self.root.geometry("1400x900")
+        self.root.minsize(800, 600)  # 设置最小窗口大小
 
         # 视频相关变量
         self.video_capture = None
@@ -27,10 +29,11 @@ class VideoStopwatch:
 
         # 记录相关变量
         self.records = []
-        self.record_key = 'z'
+        self.record_key = record_key
 
         # 用于实时更新显示的变量
         self.current_time_var = tk.StringVar(value="00:00:00.000")
+        self.progress_dragging = False  # 标记是否正在拖动进度条
 
         self.setup_ui()
         self.setup_keyboard_listener()
@@ -61,7 +64,7 @@ class VideoStopwatch:
         video_frame = ttk.LabelFrame(parent, text="视频播放区域", padding="5")
         video_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
         video_frame.columnconfigure(0, weight=1)
-        video_frame.rowconfigure(1, weight=1)
+        video_frame.rowconfigure(2, weight=1)
 
         # 视频控制按钮
         video_controls = ttk.Frame(video_frame)
@@ -83,14 +86,36 @@ class VideoStopwatch:
         fullscreen_btn = ttk.Button(video_controls, text="全屏", command=self.toggle_fullscreen)
         fullscreen_btn.pack(side=tk.LEFT, padx=(0, 5))
 
+        # 视频进度条
+        progress_frame = ttk.Frame(video_frame)
+        progress_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        progress_frame.columnconfigure(0, weight=1)
+
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_scale = ttk.Scale(progress_frame, from_=0, to=100, orient=tk.HORIZONTAL,
+                                        variable=self.progress_var, command=self.on_progress_changed)
+        self.progress_scale.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+        # 绑定鼠标事件以实现拖动和点击功能
+        self.progress_scale.bind('<Button-1>', self.on_progress_press)
+        self.progress_scale.bind('<ButtonRelease-1>', self.on_progress_release)
+        self.progress_scale.bind('<Button-3>', self.on_progress_click)  # 右键点击跳转
+        # 支持双击左键跳转
+        self.progress_scale.bind('<Double-Button-1>', self.on_progress_click)
+
+        self.progress_label = ttk.Label(progress_frame, text="0/0", font=('Arial', 9), width=12)
+        self.progress_label.grid(row=0, column=1)
+
         # 视频显示区域
         self.video_label = ttk.Label(video_frame, text="请选择视频文件", font=('Arial', 12),
                                      relief='sunken', borderwidth=1)
-        self.video_label.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        self.video_label.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        
+        # 绑定窗口大小变化事件，确保视频显示正确
+        self.root.bind('<Configure>', self.on_window_resize)
 
         # 视频信息区域
         info_frame = ttk.Frame(video_frame)
-        info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        info_frame.grid(row=3, column=0, sticky=(tk.W, tk.E))
         info_frame.columnconfigure(0, weight=1)
 
         # 视频进度信息
@@ -131,6 +156,10 @@ class VideoStopwatch:
         # 记录时间点按钮
         record_btn = ttk.Button(controls, text="记录时间点", command=self.manual_record)
         record_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        # 删除选中记录按钮
+        delete_btn = ttk.Button(controls, text="删除选中", command=self.delete_selected_record)
+        delete_btn.pack(side=tk.LEFT, padx=(0, 10))
 
         # 清空记录按钮
         clear_btn = ttk.Button(controls, text="清空记录", command=self.clear_records)
@@ -208,6 +237,13 @@ class VideoStopwatch:
                     text=f"记录点数: {count} | 当前视频时间: {current_video_time:.3f}秒"
                 ))
 
+                # 更新进度条和标签（如果不在拖动状态且视频未播放）
+                if not self.progress_dragging and not self.video_playing and self.total_frames > 0:
+                    progress_value = (self.current_frame / max(self.total_frames - 1, 1)) * 100
+                    self.root.after(0, lambda: self.progress_var.set(progress_value))
+                    self.root.after(0, lambda: self.progress_label.config(
+                        text=f"{self.current_frame}/{self.total_frames}"))
+
             time.sleep(0.1)  # 100ms更新一次足够了
 
     def setup_keyboard_listener(self):
@@ -270,6 +306,10 @@ class VideoStopwatch:
             self.current_frame = 0
             self.show_current_frame()
 
+            # 更新进度条范围
+            self.progress_scale.config(to=max(self.total_frames - 1, 1))
+            self.progress_var.set(0)
+
             # 启用控制按钮
             self.play_pause_btn.config(state='normal')
             self.stop_btn.config(state='normal')
@@ -282,6 +322,8 @@ class VideoStopwatch:
         if not self.video_capture:
             return
 
+        # 确保视频定位到正确的帧
+        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
         ret, frame = self.video_capture.read()
         if ret:
             # 获取标签的实际尺寸
@@ -289,16 +331,16 @@ class VideoStopwatch:
             label_width = self.video_label.winfo_width()
             label_height = self.video_label.winfo_height()
 
-            # 设置显示尺寸
+            # 设置显示尺寸 - 确保视频完整显示
             if label_width > 10 and label_height > 10:
                 max_width = max(label_width - 10, 400)
                 max_height = max(label_height - 10, 300)
             else:
                 max_width, max_height = 800, 600
 
-            # 调整图像大小
+            # 调整图像大小，保持宽高比
             height, width = frame.shape[:2]
-            scale = min(max_width / width, max_height / height)
+            scale = min(max_width / width, max_height / height, 1.0)  # 不放大，只缩小
             new_width = int(width * scale)
             new_height = int(height * scale)
 
@@ -310,6 +352,11 @@ class VideoStopwatch:
             photo = ImageTk.PhotoImage(image)
             self.video_label.config(image=photo, text="")
             self.video_label.image = photo
+
+            # 更新进度条显示
+            if not self.progress_dragging and self.total_frames > 0:
+                self.progress_var.set((self.current_frame / max(self.total_frames - 1, 1)) * 100)
+                self.progress_label.config(text=f"{self.current_frame}/{self.total_frames}")
 
     def toggle_video_playback(self):
         """切换视频播放/暂停状态"""
@@ -345,12 +392,17 @@ class VideoStopwatch:
             self.show_current_frame()
 
         self.play_pause_btn.config(text="播放")
+        if self.total_frames > 0:
+            self.progress_var.set(0)
+            self.progress_label.config(text=f"0/{self.total_frames}")
 
     def play_video_loop(self):
         """视频播放循环"""
         while self.video_playing and self.video_capture:
             start_time = time.time()
 
+            # 确保视频定位到当前帧
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
             ret, frame = self.video_capture.read()
             if not ret:
                 # 视频播放完毕
@@ -383,9 +435,9 @@ class VideoStopwatch:
             else:
                 max_width, max_height = 800, 600
 
-            # 调整图像大小
+            # 调整图像大小，保持宽高比，不放大只缩小
             height, width = frame.shape[:2]
-            scale = min(max_width / width, max_height / height)
+            scale = min(max_width / width, max_height / height, 1.0)  # 不放大，只缩小
             new_width = int(width * scale)
             new_height = int(height * scale)
 
@@ -403,6 +455,12 @@ class VideoStopwatch:
             progress_text = f"进度: {self.format_time(current_time)} / {self.format_time(total_time)}"
             self.video_info_var.set(f"{progress_text} | 帧: {self.current_frame}/{self.total_frames}")
 
+            # 更新进度条（如果不在拖动状态）
+            if not self.progress_dragging and self.total_frames > 0:
+                progress_value = (self.current_frame / max(self.total_frames - 1, 1)) * 100
+                self.progress_var.set(progress_value)
+                self.progress_label.config(text=f"{self.current_frame}/{self.total_frames}")
+
         except Exception as e:
             print(f"更新视频显示错误: {e}")
 
@@ -415,6 +473,82 @@ class VideoStopwatch:
         if not current_state:
             self.root.bind('<Escape>', lambda e: self.root.attributes('-fullscreen', False))
 
+    def on_progress_changed(self, value):
+        """进度条改变时的回调"""
+        if not self.video_capture or self.total_frames == 0:
+            return
+
+        # 只有在拖动时才更新
+        if not self.progress_dragging:
+            return
+
+        frame_number = int(float(value))
+        if 0 <= frame_number < self.total_frames:
+            self.current_frame = frame_number
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            self.show_current_frame()
+            # 更新标签显示
+            self.progress_label.config(text=f"{frame_number}/{self.total_frames}")
+
+    def on_progress_press(self, event):
+        """进度条按下时"""
+        # 检查是否是点击轨道（而不是拖动滑块）
+        # 如果是点击轨道，直接跳转
+        scale_width = self.progress_scale.winfo_width()
+        if scale_width > 0 and not self.progress_dragging:
+            # 检查点击位置是否接近当前滑块位置
+            current_ratio = self.progress_var.get() / 100.0
+            click_ratio = event.x / scale_width
+            # 如果点击位置与当前滑块位置差距较大，认为是点击跳转
+            if abs(click_ratio - current_ratio) > 0.05:  # 5%的容差
+                # 这是点击跳转，不是拖动
+                self.on_progress_click(event)
+                return
+        
+        self.progress_dragging = True
+        if self.video_playing:
+            self.pause_video_playback()
+
+    def on_progress_release(self, event):
+        """进度条释放时"""
+        if self.progress_dragging:
+            value = self.progress_var.get()
+            frame_number = int(float(value))
+            if 0 <= frame_number < self.total_frames:
+                self.current_frame = frame_number
+                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                self.show_current_frame()
+        self.progress_dragging = False
+    
+    def on_progress_click(self, event):
+        """进度条点击时（右键点击）跳转到指定帧"""
+        if not self.video_capture or self.total_frames == 0:
+            return
+        
+        # 暂停播放（如果正在播放）
+        was_playing = self.video_playing
+        if was_playing:
+            self.pause_video_playback()
+        
+        # 计算点击位置对应的帧数
+        scale_width = self.progress_scale.winfo_width()
+        if scale_width > 0:
+            click_x = event.x
+            ratio = click_x / scale_width
+            frame_number = int(ratio * (self.total_frames - 1))
+            frame_number = max(0, min(frame_number, self.total_frames - 1))
+            
+            # 跳转到该帧
+            self.current_frame = frame_number
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            self.show_current_frame()
+            
+            # 更新进度条显示
+            self.progress_var.set((frame_number / max(self.total_frames - 1, 1)) * 100)
+            self.progress_label.config(text=f"{frame_number}/{self.total_frames}")
+            
+            # 如果之前正在播放，可以从新位置继续播放（用户需要手动点击播放）
+
     def on_video_finished(self):
         """视频播放完毕"""
         self.video_playing = False
@@ -422,11 +556,12 @@ class VideoStopwatch:
         messagebox.showinfo("提示", "视频播放完毕")
 
     def record_time(self):
-        """记录当前视频播放时间"""
+        """记录当前视频播放时间（基于当前帧数）"""
         if not self.video_capture:
             messagebox.showwarning("提示", "请先加载视频")
             return
 
+        # 确保使用当前帧数计算时间，保证准确性
         video_time = self.get_current_video_time()
 
         # 计算与上一次记录的间隔
@@ -438,7 +573,8 @@ class VideoStopwatch:
             'sequence': len(self.records) + 1,
             'time_display': self.format_time(video_time),
             'video_time': round(video_time, 3),
-            'interval': round(interval, 3)
+            'interval': round(interval, 3),
+            'frame': self.current_frame  # 保存帧数信息
         }
 
         self.records.append(record)
@@ -461,6 +597,53 @@ class VideoStopwatch:
         children = self.tree.get_children()
         if children:
             self.tree.see(children[-1])
+
+    def delete_selected_record(self):
+        """删除选中的记录"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("提示", "请先选择要删除的记录")
+            return
+
+        # 获取所有选中项的序号，按降序排序，避免删除时索引错乱
+        sequence_nums = []
+        for item in selected_items:
+            values = self.tree.item(item, 'values')
+            if values:
+                sequence_num = int(values[0])
+                sequence_nums.append(sequence_num)
+        
+        # 按降序排序，从后往前删除
+        sequence_nums.sort(reverse=True)
+        
+        # 删除记录
+        for sequence_num in sequence_nums:
+            record_index = sequence_num - 1
+            if 0 <= record_index < len(self.records):
+                self.records.pop(record_index)
+
+        # 重新构建Treeview和更新序号
+        self.refresh_tree_view()
+
+    def refresh_tree_view(self):
+        """刷新Treeview显示，重新计算序号和间隔时间"""
+        # 清空Treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # 重新添加记录并更新序号和间隔时间
+        for i, record in enumerate(self.records):
+            # 更新序号
+            record['sequence'] = i + 1
+
+            # 重新计算间隔时间
+            if i == 0:
+                record['interval'] = 0
+            else:
+                record['interval'] = round(record['video_time'] - self.records[i - 1]['video_time'], 3)
+
+            # 添加到Treeview
+            self.add_record_to_tree(record)
 
     def clear_records(self):
         """清空记录"""
@@ -709,12 +892,100 @@ class VideoStopwatch:
         except KeyboardInterrupt:
             pass
 
+    def on_window_resize(self, event):
+        """窗口大小变化时重新显示当前帧"""
+        if self.video_capture and event.widget == self.root:
+            # 延迟更新，避免频繁刷新
+            if hasattr(self, '_resize_timer'):
+                self.root.after_cancel(self._resize_timer)
+            self._resize_timer = self.root.after(100, self.show_current_frame)
+    
     def on_closing(self):
         """关闭程序时清理资源"""
         self.video_playing = False
         if self.video_capture:
             self.video_capture.release()
         self.root.destroy()
+
+
+def show_instance_selection():
+    """显示实例选择对话框"""
+    selection_window = tk.Tk()
+    selection_window.title("选择实例数量")
+    selection_window.geometry("400x280")
+    selection_window.resizable(False, False)
+    
+    # 居中显示
+    selection_window.update_idletasks()
+    x = (selection_window.winfo_screenwidth() // 2) - (selection_window.winfo_width() // 2)
+    y = (selection_window.winfo_screenheight() // 2) - (selection_window.winfo_height() // 2)
+    selection_window.geometry(f"+{x}+{y}")
+    
+    result = {'count': 1, 'keys': ['z', 'x', 'c', 'v'], 'confirmed': False}
+    
+    def on_confirm():
+        try:
+            count = int(instance_var.get())
+            if 1 <= count <= 4:
+                result['count'] = count
+                # 获取每个实例的快捷键
+                keys = []
+                for i in range(count):
+                    key = key_vars[i].get().strip().lower()
+                    if not key:
+                        messagebox.showerror("错误", f"实例 {i+1} 的快捷键不能为空")
+                        return
+                    keys.append(key)
+                result['keys'] = keys
+                result['confirmed'] = True
+                selection_window.quit()
+                selection_window.destroy()
+            else:
+                messagebox.showerror("错误", "请选择1-4个实例")
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的数字")
+    
+    # 主标签
+    ttk.Label(selection_window, text="请选择要打开的实例数量:", font=('Arial', 12)).pack(pady=10)
+    
+    # 实例数量选择
+    instance_frame = ttk.Frame(selection_window)
+    instance_frame.pack(pady=5)
+    
+    instance_var = tk.StringVar(value="1")
+    for i in range(1, 5):
+        ttk.Radiobutton(instance_frame, text=str(i), variable=instance_var, value=str(i)).pack(side=tk.LEFT, padx=10)
+    
+    # 快捷键设置框架
+    keys_frame = ttk.LabelFrame(selection_window, text="快捷键设置（每个实例）", padding="5")
+    keys_frame.pack(pady=10, padx=20, fill=tk.X)
+    
+    key_vars = []
+    for i in range(4):
+        key_frame = ttk.Frame(keys_frame)
+        key_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(key_frame, text=f"实例 {i+1}:", width=10).pack(side=tk.LEFT)
+        key_var = tk.StringVar(value=['z', 'x', 'c', 'v'][i])
+        key_entry = ttk.Entry(key_frame, textvariable=key_var, width=10)
+        key_entry.pack(side=tk.LEFT, padx=5)
+        key_vars.append(key_var)
+    
+    # 确认按钮
+    ttk.Button(selection_window, text="确认", command=on_confirm).pack(pady=10)
+    
+    # 处理窗口关闭事件
+    def on_selection_close():
+        result['confirmed'] = False
+        selection_window.quit()
+        selection_window.destroy()
+    
+    selection_window.protocol("WM_DELETE_WINDOW", on_selection_close)
+    selection_window.mainloop()
+    
+    if result['confirmed']:
+        return result['count'], result['keys']
+    else:
+        return 0, []
 
 
 def main():
@@ -730,8 +1001,29 @@ def main():
         print("pip install opencv-python keyboard pandas openpyxl pillow")
         return
 
-    app = VideoStopwatch()
-    app.run()
+    # 显示实例选择对话框
+    instance_count, record_keys = show_instance_selection()
+    
+    if instance_count == 0:
+        return
+    
+    # 创建多个实例并在不同线程中运行
+    import threading
+    
+    def run_app(instance_id, record_key):
+        """在独立线程中运行应用实例"""
+        app = VideoStopwatch(instance_id=instance_id, record_key=record_key)
+        app.run()
+    
+    threads = []
+    for i in range(instance_count):
+        thread = threading.Thread(target=run_app, args=(i+1, record_keys[i]), daemon=False)
+        thread.start()
+        threads.append(thread)
+    
+    # 等待所有线程完成（实际上会一直运行直到窗口关闭）
+    for thread in threads:
+        thread.join()
 
 
 if __name__ == "__main__":
