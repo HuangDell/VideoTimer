@@ -102,7 +102,7 @@ class VideoStopwatch:
         # 支持双击左键跳转
         self.progress_scale.bind('<Double-Button-1>', self.on_progress_click)
 
-        self.progress_label = ttk.Label(progress_frame, text="0/0", font=('Arial', 9), width=12)
+        self.progress_label = ttk.Label(progress_frame, text="00:00:00.000 / 00:00:00.000", font=('Arial', 9), width=25)
         self.progress_label.grid(row=0, column=1)
 
         # 视频显示区域
@@ -207,6 +207,9 @@ class VideoStopwatch:
 
         self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # 绑定双击事件，跳转到对应视频位置
+        self.tree.bind('<Double-Button-1>', self.on_record_double_click)
 
         # 统计信息
         self.stats_label = ttk.Label(timing_frame, text="记录点数: 0", font=('Arial', 9))
@@ -241,8 +244,11 @@ class VideoStopwatch:
                 if not self.progress_dragging and not self.video_playing and self.total_frames > 0:
                     progress_value = (self.current_frame / max(self.total_frames - 1, 1)) * 100
                     self.root.after(0, lambda: self.progress_var.set(progress_value))
+                    current_time_str = self.format_time(current_video_time)
+                    total_time = self.total_frames / self.video_fps
+                    total_time_str = self.format_time(total_time)
                     self.root.after(0, lambda: self.progress_label.config(
-                        text=f"{self.current_frame}/{self.total_frames}"))
+                        text=f"{current_time_str} / {total_time_str}"))
 
             time.sleep(0.1)  # 100ms更新一次足够了
 
@@ -309,6 +315,9 @@ class VideoStopwatch:
             # 更新进度条范围
             self.progress_scale.config(to=max(self.total_frames - 1, 1))
             self.progress_var.set(0)
+            # 更新进度条标签显示
+            total_time_str = self.format_time(video_duration)
+            self.progress_label.config(text=f"00:00:00.000 / {total_time_str}")
 
             # 启用控制按钮
             self.play_pause_btn.config(state='normal')
@@ -356,7 +365,11 @@ class VideoStopwatch:
             # 更新进度条显示
             if not self.progress_dragging and self.total_frames > 0:
                 self.progress_var.set((self.current_frame / max(self.total_frames - 1, 1)) * 100)
-                self.progress_label.config(text=f"{self.current_frame}/{self.total_frames}")
+                current_time = self.get_current_video_time()
+                current_time_str = self.format_time(current_time)
+                total_time = self.total_frames / self.video_fps
+                total_time_str = self.format_time(total_time)
+                self.progress_label.config(text=f"{current_time_str} / {total_time_str}")
 
     def toggle_video_playback(self):
         """切换视频播放/暂停状态"""
@@ -394,7 +407,9 @@ class VideoStopwatch:
         self.play_pause_btn.config(text="播放")
         if self.total_frames > 0:
             self.progress_var.set(0)
-            self.progress_label.config(text=f"0/{self.total_frames}")
+            total_time = self.total_frames / self.video_fps
+            total_time_str = self.format_time(total_time)
+            self.progress_label.config(text=f"00:00:00.000 / {total_time_str}")
 
     def play_video_loop(self):
         """视频播放循环"""
@@ -464,7 +479,9 @@ class VideoStopwatch:
             if not self.progress_dragging and self.total_frames > 0:
                 progress_value = (self.current_frame / max(self.total_frames - 1, 1)) * 100
                 self.progress_var.set(progress_value)
-                self.progress_label.config(text=f"{self.current_frame}/{self.total_frames}")
+                current_time_str = self.format_time(current_time)
+                total_time_str = self.format_time(total_time)
+                self.progress_label.config(text=f"{current_time_str} / {total_time_str}")
 
         except Exception as e:
             print(f"更新视频显示错误: {e}")
@@ -493,7 +510,11 @@ class VideoStopwatch:
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             self.show_current_frame()
             # 更新标签显示
-            self.progress_label.config(text=f"{frame_number}/{self.total_frames}")
+            current_time = frame_number / self.video_fps
+            current_time_str = self.format_time(current_time)
+            total_time = self.total_frames / self.video_fps
+            total_time_str = self.format_time(total_time)
+            self.progress_label.config(text=f"{current_time_str} / {total_time_str}")
 
     def on_progress_press(self, event):
         """进度条按下时"""
@@ -550,9 +571,52 @@ class VideoStopwatch:
             
             # 更新进度条显示
             self.progress_var.set((frame_number / max(self.total_frames - 1, 1)) * 100)
-            self.progress_label.config(text=f"{frame_number}/{self.total_frames}")
+            current_time = frame_number / self.video_fps
+            current_time_str = self.format_time(current_time)
+            total_time = self.total_frames / self.video_fps
+            total_time_str = self.format_time(total_time)
+            self.progress_label.config(text=f"{current_time_str} / {total_time_str}")
             
             # 如果之前正在播放，可以从新位置继续播放（用户需要手动点击播放）
+
+    def on_record_double_click(self, event):
+        """双击记录时跳转到对应视频位置"""
+        selected_items = self.tree.selection()
+        if not selected_items or not self.video_capture:
+            return
+        
+        # 获取选中的记录
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        if not values or len(values) < 3:
+            return
+        
+        try:
+            # 获取视频时间（秒）
+            video_time_seconds = float(values[2])
+            
+            # 计算对应的帧数
+            target_frame = int(video_time_seconds * self.video_fps)
+            target_frame = max(0, min(target_frame, self.total_frames - 1))
+            
+            # 暂停播放（如果正在播放）
+            if self.video_playing:
+                self.pause_video_playback()
+            
+            # 跳转到该帧
+            self.current_frame = target_frame
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            self.show_current_frame()
+            
+            # 更新进度条显示
+            if self.total_frames > 0:
+                self.progress_var.set((target_frame / max(self.total_frames - 1, 1)) * 100)
+                current_time_str = self.format_time(video_time_seconds)
+                total_time = self.total_frames / self.video_fps
+                total_time_str = self.format_time(total_time)
+                self.progress_label.config(text=f"{current_time_str} / {total_time_str}")
+        except (ValueError, IndexError) as e:
+            print(f"跳转失败: {e}")
 
     def on_video_finished(self):
         """视频播放完毕"""
@@ -591,8 +655,17 @@ class VideoStopwatch:
 
     def add_record_to_tree(self, record):
         """添加记录到列表"""
+        # 判断是否是成对记录的开始（奇数序号）
+        sequence_display = str(record['sequence'])
+        if record['sequence'] % 2 == 1:
+            # 奇数序号，是成对记录的开始，添加'['前缀
+            sequence_display = f"[{sequence_display}"
+        elif record['sequence'] % 2 == 0 and record['sequence'] > 0:
+            # 偶数序号，是成对记录的结束，添加']'后缀
+            sequence_display = f"{sequence_display}]"
+        
         self.tree.insert('', 'end', values=(
-            record['sequence'],
+            sequence_display,
             record['time_display'],
             f"{record['video_time']:.3f}",
             f"{record['interval']:.3f}" if record['interval'] > 0 else "0.000"
@@ -615,8 +688,13 @@ class VideoStopwatch:
         for item in selected_items:
             values = self.tree.item(item, 'values')
             if values:
-                sequence_num = int(values[0])
-                sequence_nums.append(sequence_num)
+                # 解析序号（可能包含'['或']'符号）
+                sequence_str = str(values[0]).strip('[]')
+                try:
+                    sequence_num = int(sequence_str)
+                    sequence_nums.append(sequence_num)
+                except ValueError:
+                    continue
         
         # 按降序排序，从后往前删除
         sequence_nums.sort(reverse=True)
@@ -647,8 +725,19 @@ class VideoStopwatch:
             else:
                 record['interval'] = round(record['video_time'] - self.records[i - 1]['video_time'], 3)
 
-            # 添加到Treeview
-            self.add_record_to_tree(record)
+            # 添加到Treeview（使用内部方法，避免重复添加符号）
+            sequence_display = str(record['sequence'])
+            if record['sequence'] % 2 == 1:
+                sequence_display = f"[{sequence_display}"
+            elif record['sequence'] % 2 == 0 and record['sequence'] > 0:
+                sequence_display = f"{sequence_display}]"
+            
+            self.tree.insert('', 'end', values=(
+                sequence_display,
+                record['time_display'],
+                f"{record['video_time']:.3f}",
+                f"{record['interval']:.3f}" if record['interval'] > 0 else "0.000"
+            ))
 
     def clear_records(self):
         """清空记录"""
