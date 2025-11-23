@@ -174,6 +174,17 @@ class VideoPanel:
             label_height: 标签高度
         """
         try:
+            # 检查窗口是否仍然存在
+            root = self.parent.winfo_toplevel()
+            if not root.winfo_exists():
+                return
+            
+            # 检查标签是否仍然存在
+            try:
+                self.video_label.winfo_exists()
+            except tk.TclError:
+                return
+
             # 设置显示尺寸
             if label_width > 10 and label_height > 10:
                 max_width = max(label_width - 10, 400)
@@ -191,10 +202,15 @@ class VideoPanel:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             # 转换为PIL Image并显示
+            # 确保在正确的Tkinter根窗口上下文中创建PhotoImage
             image = Image.fromarray(frame)
-            photo = ImageTk.PhotoImage(image)
+            photo = ImageTk.PhotoImage(image, master=root)
             self.video_label.config(image=photo, text="")
+            # 保存引用以防止垃圾回收
             self.video_label.image = photo
+        except tk.TclError:
+            # 窗口已关闭，忽略错误
+            pass
         except Exception as e:
             print(f"更新视频显示错误: {e}")
 

@@ -1,5 +1,6 @@
 """视频控制器 - 协调视频模型、服务和视图"""
 import cv2
+import tkinter as tk
 from typing import Optional
 from models.video_model import VideoModel
 from services.video_service import VideoService
@@ -82,45 +83,70 @@ class VideoController:
 
     def _update_frame_display(self, frame):
         """更新帧显示"""
-        self.video_panel.video_label.update_idletasks()
-        label_width = self.video_panel.video_label.winfo_width()
-        label_height = self.video_panel.video_label.winfo_height()
+        try:
+            # 检查窗口是否仍然存在
+            root = self.video_panel.parent.winfo_toplevel()
+            if not root.winfo_exists():
+                return
+            
+            self.video_panel.video_label.update_idletasks()
+            label_width = self.video_panel.video_label.winfo_width()
+            label_height = self.video_panel.video_label.winfo_height()
 
-        self.video_panel.update_video_frame(frame, label_width, label_height)
+            self.video_panel.update_video_frame(frame, label_width, label_height)
 
-        # 更新进度条
-        if not self.video_panel.get_progress_dragging() and self.video_model.total_frames > 0:
-            progress = self.video_model.progress
-            current_time_str = self.time_formatter.format_time(self.video_model.current_time)
-            total_time_str = self.time_formatter.format_time(self.video_model.duration)
-            self.video_panel.update_progress(progress, current_time_str, total_time_str)
+            # 更新进度条
+            if not self.video_panel.get_progress_dragging() and self.video_model.total_frames > 0:
+                progress = self.video_model.progress
+                current_time_str = self.time_formatter.format_time(self.video_model.current_time)
+                total_time_str = self.time_formatter.format_time(self.video_model.duration)
+                self.video_panel.update_progress(progress, current_time_str, total_time_str)
+        except tk.TclError:
+            # 窗口已关闭，忽略错误
+            pass
 
     def _on_frame_update(self, frame, current_time: float):
         """帧更新回调"""
-        root = self.video_panel.parent.winfo_toplevel()
-        root.after(0, lambda: self._update_frame_display(frame))
+        try:
+            root = self.video_panel.parent.winfo_toplevel()
+            # 检查窗口是否仍然存在
+            if not root.winfo_exists():
+                return
+            
+            root.after(0, lambda: self._update_frame_display(frame))
 
-        # 更新视频信息
-        total_time = self.video_model.duration
-        progress_text = (
-            f"进度: {self.time_formatter.format_time(current_time)} / "
-            f"{self.time_formatter.format_time(total_time)}"
-        )
-        info = f"{progress_text} | 帧: {self.video_model.current_frame}/{self.video_model.total_frames}"
-        root.after(0, lambda: self.video_panel.update_video_info(info))
+            # 更新视频信息
+            total_time = self.video_model.duration
+            progress_text = (
+                f"进度: {self.time_formatter.format_time(current_time)} / "
+                f"{self.time_formatter.format_time(total_time)}"
+            )
+            info = f"{progress_text} | 帧: {self.video_model.current_frame}/{self.video_model.total_frames}"
+            root.after(0, lambda: self.video_panel.update_video_info(info))
 
-        # 更新进度条
-        if not self.video_panel.get_progress_dragging() and self.video_model.total_frames > 0:
-            progress = self.video_model.progress
-            current_time_str = self.time_formatter.format_time(current_time)
-            total_time_str = self.time_formatter.format_time(total_time)
-            root.after(0, lambda: self.video_panel.update_progress(progress, current_time_str, total_time_str))
+            # 更新进度条
+            if not self.video_panel.get_progress_dragging() and self.video_model.total_frames > 0:
+                progress = self.video_model.progress
+                current_time_str = self.time_formatter.format_time(current_time)
+                total_time_str = self.time_formatter.format_time(total_time)
+                root.after(0, lambda: self.video_panel.update_progress(progress, current_time_str, total_time_str))
+        except tk.TclError:
+            # 窗口已关闭，忽略错误
+            pass
 
     def _on_video_finished(self):
         """视频播放完成回调"""
-        root = self.video_panel.parent.winfo_toplevel()
-        root.after(0, lambda: self.video_panel.set_play_button_text("播放"))
-        root.after(0, lambda: self._show_finished_message())
+        try:
+            root = self.video_panel.parent.winfo_toplevel()
+            # 检查窗口是否仍然存在
+            if not root.winfo_exists():
+                return
+            
+            root.after(0, lambda: self.video_panel.set_play_button_text("播放"))
+            root.after(0, lambda: self._show_finished_message())
+        except tk.TclError:
+            # 窗口已关闭，忽略错误
+            pass
 
     def _show_finished_message(self):
         """显示播放完成消息"""
