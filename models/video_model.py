@@ -104,11 +104,14 @@ class VideoModel:
         if not self.video_capture:
             return False, None
 
+        # 读取前获取当前帧位置（read()后会指向下一帧）
+        current_pos = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES))
+        
         ret, frame = self.video_capture.read()
         if ret:
-            # 更新当前帧号
-            actual_frame = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-            self.current_frame = actual_frame
+            # 读取成功后，当前帧号就是读取前的帧位置
+            # 因为read()读取当前帧后，位置会自动移动到下一帧
+            self.current_frame = current_pos
 
         return ret, frame
 

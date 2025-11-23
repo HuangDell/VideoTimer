@@ -22,6 +22,10 @@ class VideoPanel:
         self.on_progress_press: Optional[Callable] = None
         self.on_progress_release: Optional[Callable] = None
         self.on_progress_click: Optional[Callable] = None
+        
+        # 内部状态
+        self._max_frames: float = 1
+        self._progress_dragging: bool = False
 
         self._setup_ui()
 
@@ -240,16 +244,17 @@ class VideoPanel:
         self.stop_btn.config(state=state)
 
     def set_progress_range(self, max_value: float):
-        """设置进度条范围
+        """设置进度条范围（保持0-100百分比范围）
         
         Args:
-            max_value: 最大值
+            max_value: 最大帧数（用于内部计算，但不改变进度条范围）
         """
-        self.progress_scale.config(to=max_value)
+        # 进度条始终使用0-100的百分比范围
+        self._max_frames = max_value
 
     def get_progress_dragging(self) -> bool:
         """获取是否正在拖动进度条"""
-        return getattr(self, '_progress_dragging', False)
+        return self._progress_dragging
 
     def set_progress_dragging(self, dragging: bool):
         """设置是否正在拖动进度条

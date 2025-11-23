@@ -159,7 +159,12 @@ class VideoController:
         if not self.video_panel.get_progress_dragging():
             return
 
-        frame_number = int(float(value))
+        # value 是百分比 (0-100)，需要转换为帧数
+        progress_percent = float(value)
+        max_frame = max(self.video_model.total_frames - 1, 1)
+        frame_number = int(progress_percent / 100.0 * max_frame)
+        frame_number = max(0, min(frame_number, self.video_model.total_frames - 1))
+        
         if 0 <= frame_number < self.video_model.total_frames:
             self.video_service.seek_to_frame(frame_number)
             self.show_current_frame()
@@ -168,7 +173,7 @@ class VideoController:
             current_time_str = self.time_formatter.format_time(current_time)
             total_time_str = self.time_formatter.format_time(self.video_model.duration)
             self.video_panel.update_progress(
-                (frame_number / max(self.video_model.total_frames - 1, 1)) * 100,
+                (frame_number / max_frame) * 100,
                 current_time_str,
                 total_time_str
             )
@@ -192,8 +197,12 @@ class VideoController:
     def on_progress_release(self, event):
         """进度条释放"""
         if self.video_panel.get_progress_dragging():
-            value = self.video_panel.progress_var.get()
-            frame_number = int(float(value))
+            # value 是百分比 (0-100)，需要转换为帧数
+            progress_percent = self.video_panel.progress_var.get()
+            max_frame = max(self.video_model.total_frames - 1, 1)
+            frame_number = int(progress_percent / 100.0 * max_frame)
+            frame_number = max(0, min(frame_number, self.video_model.total_frames - 1))
+            
             if 0 <= frame_number < self.video_model.total_frames:
                 self.video_service.seek_to_frame(frame_number)
                 self.show_current_frame()
