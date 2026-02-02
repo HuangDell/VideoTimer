@@ -80,24 +80,26 @@ class VideoService:
         Returns:
             当前帧（numpy数组），如果失败则返回None
         """
-        if not self.video_model.video_capture:
-            return None
+        with self.video_model._lock:
+            if not self.video_model.video_capture:
+                return None
 
-        self.video_model.video_capture.set(
-            cv2.CAP_PROP_POS_FRAMES, 
-            self.video_model.current_frame
-        )
-        ret, frame = self.video_model.video_capture.read()
-        return frame if ret else None
+            self.video_model.video_capture.set(
+                cv2.CAP_PROP_POS_FRAMES, 
+                self.video_model.current_frame
+            )
+            ret, frame = self.video_model.video_capture.read()
+            return frame if ret else None
 
     def _play_loop(self):
         """播放循环"""
         # 确保从当前帧开始播放
-        if self.video_model.video_capture:
-            self.video_model.video_capture.set(
-                cv2.CAP_PROP_POS_FRAMES,
-                self.video_model.current_frame
-            )
+        with self.video_model._lock:
+            if self.video_model.video_capture:
+                self.video_model.video_capture.set(
+                    cv2.CAP_PROP_POS_FRAMES,
+                    self.video_model.current_frame
+                )
 
         while self.video_model.video_playing and self.video_model.video_capture:
             start_time = time.time()

@@ -1,4 +1,5 @@
 """视频数据模型"""
+import threading
 from typing import Optional, Tuple
 import cv2
 import numpy as np
@@ -16,6 +17,7 @@ class VideoModel:
         self.video_playing: bool = False
         self.video_paused: bool = False
         self.playback_speed: float = 1.0  # 播放速度倍率
+        self._lock = threading.Lock()  # 线程锁，保护video_capture访问
 
     @property
     def duration(self) -> float:
@@ -48,20 +50,21 @@ class VideoModel:
             是否加载成功
         """
         try:
-            # 释放之前的视频资源
-            if self.video_capture:
-                self.video_capture.release()
+            with self._lock:
+                # 释放之前的视频资源
+                if self.video_capture:
+                    self.video_capture.release()
 
-            self.video_capture = cv2.VideoCapture(file_path)
+                self.video_capture = cv2.VideoCapture(file_path)
 
-            if not self.video_capture.isOpened():
-                return False
+                if not self.video_capture.isOpened():
+                    return False
 
-            # 获取视频信息
-            self.video_path = file_path
-            self.video_fps = self.video_capture.get(cv2.CAP_PROP_FPS)
-            self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-            self.current_frame = 0
+                # 获取视频信息
+                self.video_path = file_path
+                self.video_fps = self.video_capture.get(cv2.CAP_PROP_FPS)
+                self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                self.current_frame = 0
 
             return True
         except Exception:
@@ -76,11 +79,12 @@ class VideoModel:
         Returns:
             是否成功
         """
-        if not self.video_capture or not (0 <= frame_number < self.total_frames):
-            return False
+        with self._lock:
+            if not self.video_capture or not (0 <= frame_number < self.total_frames):
+                return False
 
-        self.current_frame = frame_number
-        return self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            self.current_frame = frame_number
+            return self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
     def seek_to_time(self, time_seconds: float) -> bool:
         """跳转到指定时间
@@ -102,32 +106,35 @@ class VideoModel:
         Returns:
             (是否成功, 帧数据)
         """
-        if not self.video_capture:
-            return False, None
+        with self._lock:
+            if not self.video_capture:
+                return False, None
 
-        # 读取前获取当前帧位置（read()后会指向下一帧）
-        current_pos = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES))
-        
-        ret, frame = self.video_capture.read()
-        if ret:
-            # 读取成功后，当前帧号就是读取前的帧位置
-            # 因为read()读取当前帧后，位置会自动移动到下一帧
-            self.current_frame = current_pos
+            # 读取前获取当前帧位置（read()后会指向下一帧）
+            current_pos = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES))
+            
+            ret, frame = self.video_capture.read()
+            if ret:
+                # 读取成功后，当前帧号就是读取前的帧位置
+                # 因为read()读取当前帧后，位置会自动移动到下一帧
+                self.current_frame = current_pos
 
-        return ret, frame
+            return ret, frame
 
     def release(self):
         """释放视频资源"""
-        if self.video_capture:
-            self.video_capture.release()
-            self.video_capture = None
+        with self._lock:
+            if self.video_capture:
+                self.video_capture.release()
+                self.video_capture = None
         self.video_playing = False
         self.current_frame = 0
 
     def reset(self):
         """重置到开始位置"""
-        self.current_frame = 0
-        if self.video_capture:
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        with self._lock:
+            self.current_frame = 0
+            if self.video_capture:
+                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.video_playing = False
 
