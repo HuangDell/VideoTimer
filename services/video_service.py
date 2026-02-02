@@ -115,9 +115,10 @@ class VideoService:
                 current_time = self.video_model.current_time
                 self._frame_update_callback(frame, current_time)
 
-            # 控制播放速度
+            # 控制播放速度（根据倍速调整帧延迟）
             elapsed = time.time() - start_time
-            target_delay = 1.0 / self.video_model.video_fps
+            # 倍速越高，帧延迟越短
+            target_delay = 1.0 / (self.video_model.video_fps * self.video_model.playback_speed)
             if elapsed < target_delay:
                 time.sleep(target_delay - elapsed)
 

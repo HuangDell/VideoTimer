@@ -22,6 +22,7 @@ class VideoPanel:
         self.on_progress_press: Optional[Callable] = None
         self.on_progress_release: Optional[Callable] = None
         self.on_progress_click: Optional[Callable] = None
+        self.on_speed_changed: Optional[Callable] = None
         
         # 内部状态
         self._max_frames: float = 1
@@ -59,6 +60,19 @@ class VideoPanel:
 
         fullscreen_btn = ttk.Button(video_controls, text="全屏", command=self._on_fullscreen)
         fullscreen_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        # 播放速度选择器
+        ttk.Label(video_controls, text="倍速:").pack(side=tk.LEFT, padx=(10, 2))
+        self.speed_var = tk.StringVar(value="1.0x")
+        self.speed_combo = ttk.Combobox(
+            video_controls,
+            textvariable=self.speed_var,
+            values=["0.5x", "0.8x", "1.0x", "1.5x", "2.0x", "3.0x"],
+            width=5,
+            state='readonly'
+        )
+        self.speed_combo.pack(side=tk.LEFT, padx=(0, 5))
+        self.speed_combo.bind('<<ComboboxSelected>>', self._on_speed_changed)
 
         # 视频进度条
         progress_frame = ttk.Frame(self.frame)
@@ -164,6 +178,31 @@ class VideoPanel:
         """进度条点击"""
         if self.on_progress_click:
             self.on_progress_click(event)
+
+    def _on_speed_changed(self, event=None):
+        """播放速度改变"""
+        if self.on_speed_changed:
+            speed_str = self.speed_var.get()
+            # 解析速度值，例如 "1.5x" -> 1.5
+            speed = float(speed_str.rstrip('x'))
+            self.on_speed_changed(speed)
+
+    def get_playback_speed(self) -> float:
+        """获取当前播放速度
+        
+        Returns:
+            播放速度倍率
+        """
+        speed_str = self.speed_var.get()
+        return float(speed_str.rstrip('x'))
+
+    def set_playback_speed(self, speed: float):
+        """设置播放速度
+        
+        Args:
+            speed: 播放速度倍率
+        """
+        self.speed_var.set(f"{speed}x")
 
     def update_video_frame(self, frame, label_width: int, label_height: int):
         """更新视频帧显示

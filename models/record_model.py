@@ -1,5 +1,5 @@
 """记录数据模型"""
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 
 
@@ -172,4 +172,47 @@ class RecordModel:
                 minute_stats[end_minute] += (end_time - minute_start)
 
         return minute_stats
+
+    def calculate_freezing_in_range(self, range_start: float, range_end: float) -> float:
+        """计算指定时间范围内的freezing总时长
+        
+        Args:
+            range_start: 范围开始时间（秒）
+            range_end: 范围结束时间（秒）
+            
+        Returns:
+            该范围内的freezing总时长（秒）
+        """
+        intervals = self.get_paired_intervals()
+        total_freezing = 0.0
+        
+        for interval in intervals:
+            start_time = interval['start']
+            end_time = interval['end']
+            
+            # 计算区间与范围的重叠部分
+            overlap_start = max(start_time, range_start)
+            overlap_end = min(end_time, range_end)
+            
+            if overlap_start < overlap_end:
+                total_freezing += (overlap_end - overlap_start)
+        
+        return total_freezing
+
+    def calculate_custom_interval_statistics(self, custom_intervals: List[Tuple[float, float]]) -> Dict[Tuple[float, float], float]:
+        """计算自定义时间区间的统计信息
+        
+        Args:
+            custom_intervals: 自定义区间列表，每个元素为 (start_seconds, end_seconds)
+            
+        Returns:
+            字典，键为区间元组 (start, end)，值为该区间内的freezing总时长
+        """
+        result = {}
+        
+        for interval_start, interval_end in custom_intervals:
+            freezing_time = self.calculate_freezing_in_range(interval_start, interval_end)
+            result[(interval_start, interval_end)] = freezing_time
+        
+        return result
 

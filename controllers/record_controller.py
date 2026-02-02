@@ -7,6 +7,7 @@ from models.video_model import VideoModel
 from services.keyboard_service import KeyboardService
 from services.export_service import ExportService
 from views.timing_panel import TimingPanel
+from views.export_dialog import ExportDialog, ExportType
 from utils.time_formatter import TimeFormatter
 from utils.config import Config
 from tkinter import filedialog, messagebox
@@ -177,6 +178,16 @@ class RecordController:
             messagebox.showwarning("警告", "没有数据可导出")
             return
 
+        # 显示导出类型选择对话框
+        root = self.timing_panel.parent.winfo_toplevel()
+        export_dialog = ExportDialog(root)
+        export_type = export_dialog.show()
+        
+        # 如果用户取消选择，直接返回
+        if export_type is None:
+            return
+
+        # 选择保存路径
         file_path = filedialog.asksaveasfilename(
             title="保存Excel文件",
             defaultextension=".xlsx",
@@ -187,24 +198,32 @@ class RecordController:
             return
 
         records = self.record_model.records
-        success = self.export_service.export('excel', records, self.video_model, file_path)
+        success = self.export_service.export('excel', records, self.video_model, file_path, export_type)
 
         if success:
             intervals = self.record_model.get_paired_intervals()
             total_duration = sum(interval['duration'] for interval in intervals)
-            minute_stats = self.record_model.calculate_minute_statistics()
+
+            # 根据导出类型显示不同的成功消息
+            type_names = {
+                ExportType.LOOMING: "Looming",
+                ExportType.TRAINING: "FC (Training)",
+                ExportType.OFC: "OFC",
+                ExportType.TEST: "Test"
+            }
+            type_name = type_names.get(export_type, "未知")
 
             messagebox.showinfo(
                 "成功",
                 f"数据已导出到: {file_path}\n\n"
+                f"导出类型: {type_name}\n\n"
                 f"包含4个工作表：\n"
                 f"1. 原始记录 - 成对的时间点记录\n"
                 f"2. 区间统计 - 所有区间的总时长统计\n"
                 f"3. 区间详情 - 详细区间列表\n"
-                f"4. 按分钟统计 - 每分钟内的区间时间\n\n"
+                f"4. Freezing统计 - 按自定义区间统计\n\n"
                 f"区间总数: {len(intervals)}\n"
-                f"区间总时长: {total_duration:.3f}秒\n"
-                f"涉及分钟数: {len(minute_stats)}"
+                f"区间总时长: {total_duration:.3f}秒"
             )
         else:
             messagebox.showerror("错误", "导出失败")

@@ -15,6 +15,7 @@ class VideoModel:
         self.current_frame: int = 0
         self.video_playing: bool = False
         self.video_paused: bool = False
+        self.playback_speed: float = 1.0  # 播放速度倍率
 
     @property
     def duration(self) -> float:

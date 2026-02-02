@@ -1,23 +1,68 @@
 """导出服务类 - 使用策略模式支持多种导出格式"""
 import pandas as pd
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from abc import ABC, abstractmethod
 from models.record_model import RecordModel, TimeRecord
 from models.video_model import VideoModel
 from utils.time_formatter import TimeFormatter
+from views.export_dialog import ExportType
+
+
+# 各导出类型的时间区间配置（秒）
+EXPORT_INTERVALS: Dict[ExportType, List[Tuple[float, float]]] = {
+    ExportType.LOOMING: [
+        (0, 60),      # 0:00:00 - 1:00:00
+        (60, 120),    # 1:00:00 - 2:00:00
+        (120, 180),   # 2:00:00 - 3:00:00
+        (181, 244),   # 3:01:00 - 4:04:00
+        (244, 307),   # 4:04:00 - 5:07:00
+        (307, 370),   # 5:07:00 - 6:10:00
+    ],
+    ExportType.TRAINING: [
+        (0, 60),      # 0:00:00 - 1:00:00
+        (60, 120),    # 1:00:00 - 2:00:00
+        (120, 180),   # 2:00:00 - 3:00:00
+        (180, 242),   # 3:00:00 - 4:02:00
+        (242, 304),   # 4:02:00 - 5:04:00
+        (304, 366),   # 5:04:00 - 6:06:00
+    ],
+    ExportType.OFC: [
+        (0, 60),      # 0:00:00 - 1:00:00
+        (60, 120),    # 1:00:00 - 2:00:00
+        (120, 180),   # 2:00:00 - 3:00:00
+        (180, 240),   # 3:00:00 - 4:00:00
+        (240, 300),   # 4:00:00 - 5:00:00
+        (300, 360),   # 5:00:00 - 6:00:00
+        (360, 420),   # 6:00:00 - 7:00:00
+        (420, 480),   # 7:00:00 - 8:00:00
+        (480, 540),   # 8:00:00 - 9:00:00
+    ],
+    ExportType.TEST: [
+        (0, 60),      # 0:00:00 - 1:00:00
+        (60, 120),    # 1:00:00 - 2:00:00
+        (120, 180),   # 2:00:00 - 3:00:00
+        (180, 240),   # 3:00:00 - 4:00:00
+        (240, 300),   # 4:00:00 - 5:00:00
+    ],
+}
+
+# 需要计算前3分钟额外统计的导出类型
+EXPORT_TYPES_WITH_FIRST_3MIN = {ExportType.LOOMING, ExportType.TRAINING}
 
 
 class ExportStrategy(ABC):
     """导出策略抽象基类"""
     
     @abstractmethod
-    def export(self, records: List[TimeRecord], video_model: VideoModel, file_path: str) -> bool:
+    def export(self, records: List[TimeRecord], video_model: VideoModel, file_path: str,
+               export_type: Optional[ExportType] = None) -> bool:
         """导出数据
         
         Args:
             records: 记录列表
             video_model: 视频模型
             file_path: 文件路径
+            export_type: 导出类型（用于自定义时间区间计算）
             
         Returns:
             是否导出成功
@@ -31,7 +76,8 @@ class ExcelExportStrategy(ExportStrategy):
     def __init__(self):
         self.time_formatter = TimeFormatter()
 
-    def export(self, records: List[TimeRecord], video_model: VideoModel, file_path: str) -> bool:
+    def export(self, records: List[TimeRecord], video_model: VideoModel, file_path: str,
+               export_type: Optional[ExportType] = None) -> bool:
         """导出到Excel"""
         try:
             record_model = RecordModel()
@@ -56,10 +102,22 @@ class ExcelExportStrategy(ExportStrategy):
             detail_data = self._create_detail_data(intervals)
             df_detail = pd.DataFrame(detail_data)
 
-            # Sheet 3: 按分钟统计
-            minute_stats = record_model.calculate_minute_statistics()
-            minute_data = self._create_minute_data(minute_stats, total_duration)
-            df_minute = pd.DataFrame(minute_data)
+            # Sheet 3: 按自定义区间统计（根据导出类型）
+            if export_type and export_type in EXPORT_INTERVALS:
+                custom_intervals = EXPORT_INTERVALS[export_type]
+                include_first_3min = export_type in EXPORT_TYPES_WITH_FIRST_3MIN
+                custom_stats = record_model.calculate_custom_interval_statistics(custom_intervals)
+                custom_data = self._create_custom_interval_data(
+                    custom_stats, custom_intervals, record_model, include_first_3min
+                )
+                df_custom = pd.DataFrame(custom_data)
+                sheet_name = f'Freezing统计({export_type.value})'
+            else:
+                # 默认使用原来的按分钟统计
+                minute_stats = record_model.calculate_minute_statistics()
+                custom_data = self._create_minute_data(minute_stats, total_duration)
+                df_custom = pd.DataFrame(custom_data)
+                sheet_name = '按分钟统计'
 
             # 写入Excel
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -84,13 +142,12 @@ class ExcelExportStrategy(ExportStrategy):
                 worksheet3.column_dimensions['B'].width = 30
                 worksheet3.column_dimensions['C'].width = 20
 
-                # Sheet 4: 按分钟统计
-                df_minute.to_excel(writer, sheet_name='按分钟统计', index=False)
-                worksheet4 = writer.sheets['按分钟统计']
-                worksheet4.column_dimensions['A'].width = 30
-                worksheet4.column_dimensions['B'].width = 18
-                worksheet4.column_dimensions['C'].width = 20
-                worksheet4.column_dimensions['D'].width = 18
+                # Sheet 4: 自定义区间统计
+                df_custom.to_excel(writer, sheet_name=sheet_name, index=False)
+                worksheet4 = writer.sheets[sheet_name]
+                worksheet4.column_dimensions['A'].width = 25
+                worksheet4.column_dimensions['B'].width = 30
+                worksheet4.column_dimensions['C'].width = 15
 
             return True
         except Exception as e:
@@ -192,6 +249,96 @@ class ExcelExportStrategy(ExportStrategy):
 
         return minute_data
 
+    def _format_interval_range(self, start_sec: float, end_sec: float) -> str:
+        """格式化时间区间范围
+        
+        Args:
+            start_sec: 开始秒数
+            end_sec: 结束秒数
+            
+        Returns:
+            格式化的时间范围字符串，如 "0:00:00-1:00:00"
+        """
+        def sec_to_time_str(seconds: float) -> str:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            secs = int(seconds % 60)
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        
+        return f"{sec_to_time_str(start_sec)}-{sec_to_time_str(end_sec)}"
+
+    def _format_freezing_time(self, seconds: float) -> str:
+        """格式化freezing时间（秒.毫秒，毫秒两位数）
+        
+        Args:
+            seconds: 秒数
+            
+        Returns:
+            格式化的时间字符串，如 "45.32"
+        """
+        whole_seconds = int(seconds)
+        # 取两位小数（相当于百分之一秒/10毫秒精度）
+        centiseconds = int((seconds - whole_seconds) * 100)
+        return f"{whole_seconds}.{centiseconds:02d}"
+
+    def _create_custom_interval_data(self, custom_stats: Dict[Tuple[float, float], float],
+                                     intervals: List[Tuple[float, float]],
+                                     record_model: RecordModel,
+                                     include_first_3min: bool = False) -> List[Dict[str, Any]]:
+        """创建自定义区间统计数据
+        
+        Args:
+            custom_stats: 自定义区间统计结果
+            intervals: 区间列表
+            record_model: 记录模型
+            include_first_3min: 是否包含前3分钟额外统计
+            
+        Returns:
+            统计数据列表
+        """
+        result_data = []
+        total_freezing = 0.0
+        
+        for start_sec, end_sec in intervals:
+            interval_duration = end_sec - start_sec
+            freezing_time = custom_stats.get((start_sec, end_sec), 0.0)
+            total_freezing += freezing_time
+            
+            # 计算百分比
+            percentage = (freezing_time / interval_duration * 100) if interval_duration > 0 else 0.0
+            
+            result_data.append({
+                '时间区间': self._format_interval_range(start_sec, end_sec),
+                'freezing总时间（秒.毫秒）': self._format_freezing_time(freezing_time),
+                '百分比': f"{percentage:.2f}%"
+            })
+        
+        # 添加总计行
+        result_data.append({
+            '时间区间': '总',
+            'freezing总时间（秒.毫秒）': self._format_freezing_time(total_freezing),
+            '百分比': ''
+        })
+        
+        # 如果需要计算前3分钟额外统计
+        if include_first_3min:
+            # 计算前3分钟（0-180秒）的freezing总时间
+            first_3min_freezing = record_model.calculate_freezing_in_range(0, 180)
+            first_3min_percentage = (first_3min_freezing / 180 * 100) if first_3min_freezing > 0 else 0.0
+            
+            result_data.append({
+                '时间区间': '',
+                'freezing总时间（秒.毫秒）': '',
+                '百分比': ''
+            })
+            result_data.append({
+                '时间区间': '前3分钟合计',
+                'freezing总时间（秒.毫秒）': self._format_freezing_time(first_3min_freezing),
+                '百分比': f"{first_3min_percentage:.2f}%"
+            })
+        
+        return result_data
+
 
 class ExportService:
     """导出服务类 - 使用策略模式"""
@@ -211,7 +358,8 @@ class ExportService:
         self._strategies[name] = strategy
 
     def export(self, format_type: str, records: List[TimeRecord], 
-               video_model: VideoModel, file_path: str) -> bool:
+               video_model: VideoModel, file_path: str,
+               export_type: Optional[ExportType] = None) -> bool:
         """导出数据
         
         Args:
@@ -219,6 +367,7 @@ class ExportService:
             records: 记录列表
             video_model: 视频模型
             file_path: 文件路径
+            export_type: 导出类型（用于自定义时间区间计算）
             
         Returns:
             是否导出成功
@@ -226,5 +375,5 @@ class ExportService:
         if format_type not in self._strategies:
             raise ValueError(f"不支持的导出格式: {format_type}")
 
-        return self._strategies[format_type].export(records, video_model, file_path)
+        return self._strategies[format_type].export(records, video_model, file_path, export_type)
 

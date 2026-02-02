@@ -32,6 +32,7 @@ class VideoController:
         self.video_panel.on_progress_press = self.on_progress_press
         self.video_panel.on_progress_release = self.on_progress_release
         self.video_panel.on_progress_click = self.on_progress_click
+        self.video_panel.on_speed_changed = self.set_playback_speed
 
         # 设置视频服务的回调
         self.video_service.set_frame_update_callback(self._on_frame_update)
@@ -284,6 +285,14 @@ class VideoController:
         """窗口大小变化处理"""
         if self.video_model.video_capture:
             self.show_current_frame()
+
+    def set_playback_speed(self, speed: float):
+        """设置播放速度
+        
+        Args:
+            speed: 播放速度倍率（如 0.5, 1.0, 2.0）
+        """
+        self.video_model.playback_speed = speed
 
     def release(self):
         """释放资源"""
