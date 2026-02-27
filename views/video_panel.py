@@ -231,9 +231,9 @@ class VideoPanel:
             else:
                 max_width, max_height = 800, 600
 
-            # 调整图像大小，保持宽高比
+            # 调整图像大小，保持宽高比（允许在全屏时放大以铺满区域）
             height, width = frame.shape[:2]
-            scale = min(max_width / width, max_height / height, 1.0)
+            scale = min(max_width / width, max_height / height)
             new_width = int(width * scale)
             new_height = int(height * scale)
 
