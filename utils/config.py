@@ -27,6 +27,14 @@ class Config:
             'max_instances': 4,
             'default_instances': 1,
             'default_keys': ['z', 'x', 'c', 'v'],
+            'freezing_sample_rate': 10.0,
+            'freezing_analysis_width': 320,
+            'freezing_pixel_diff_threshold': 25,
+            'freezing_motion_threshold': 0.0004,
+            'freezing_min_duration': 0.5,
+            'freezing_merge_gap': 0.3,
+            'freezing_min_non_freeze_gap': 0.2,
+            'freezing_smoothing_window': 0.3,
         }
 
     def get(self, key: str, default: Any = None) -> Any:

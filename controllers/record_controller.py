@@ -1,11 +1,17 @@
 """记录控制器 - 协调记录模型、服务和视图"""
 import threading
 import time
-from typing import Optional
+from typing import List, Optional
+import tkinter as tk
 from models.record_model import RecordModel
 from models.video_model import VideoModel
 from services.keyboard_service import KeyboardService
 from services.export_service import ExportService
+from services.freezing_detection_service import (
+    FreezingDetectionParams,
+    FreezingDetectionService,
+    FreezingInterval,
+)
 from views.timing_panel import TimingPanel
 from views.export_dialog import ExportDialog, ExportType
 from utils.time_formatter import TimeFormatter
@@ -18,11 +24,13 @@ class RecordController:
     
     def __init__(self, record_model: RecordModel, video_model: VideoModel,
                  keyboard_service: KeyboardService, export_service: ExportService,
-                 timing_panel: TimingPanel):
+                 timing_panel: TimingPanel,
+                 freezing_detection_service: Optional[FreezingDetectionService] = None):
         self.record_model = record_model
         self.video_model = video_model
         self.keyboard_service = keyboard_service
         self.export_service = export_service
+        self.freezing_detection_service = freezing_detection_service or FreezingDetectionService()
         self.timing_panel = timing_panel
         self.time_formatter = TimeFormatter()
         self.config = Config()
@@ -30,6 +38,8 @@ class RecordController:
         # 显示更新线程
         self._display_thread: Optional[threading.Thread] = None
         self._display_running = False
+        self._detection_thread: Optional[threading.Thread] = None
+        self._detection_running = False
 
         # 设置回调
         self._setup_callbacks()
@@ -40,6 +50,7 @@ class RecordController:
         self.timing_panel.on_delete = self.delete_selected_records
         self.timing_panel.on_clear = self.clear_records
         self.timing_panel.on_export = self.export_to_excel
+        self.timing_panel.on_auto_detect = self.auto_detect_freezing
         self.timing_panel.on_update_key = self.update_record_key
         self.timing_panel.on_record_double_click = self.on_record_double_click
 
@@ -142,6 +153,161 @@ class RecordController:
                 record.video_time,
                 record.interval
             )
+
+    def auto_detect_freezing(self):
+        """自动检测视频中的停止区间并作为候选记录导入。"""
+        if self._detection_running:
+            return
+
+        if not self.video_model.video_capture or not self.video_model.video_path:
+            messagebox.showwarning("提示", "请先加载视频")
+            return
+
+        if self.video_model.video_playing and hasattr(self, 'on_pause_video'):
+            self.on_pause_video()
+
+        params = self._create_freezing_detection_params()
+        video_path = self.video_model.video_path
+        fps = self.video_model.video_fps
+        total_frames = self.video_model.total_frames
+
+        self._detection_running = True
+        self.timing_panel.set_auto_detect_running(True)
+        self.timing_panel.update_auto_detect_status("自动检测中: 0%")
+
+        self._detection_thread = threading.Thread(
+            target=self._run_freezing_detection,
+            args=(video_path, fps, total_frames, params),
+            daemon=True
+        )
+        self._detection_thread.start()
+
+    def _create_freezing_detection_params(self) -> FreezingDetectionParams:
+        """从配置创建自动检测参数。"""
+        return FreezingDetectionParams(
+            sample_rate=float(self.config.get('freezing_sample_rate', 10.0)),
+            analysis_width=int(self.config.get('freezing_analysis_width', 320)),
+            pixel_diff_threshold=int(self.config.get('freezing_pixel_diff_threshold', 25)),
+            motion_threshold=float(self.config.get('freezing_motion_threshold', 0.0004)),
+            min_freeze_duration=float(self.config.get('freezing_min_duration', 0.5)),
+            merge_gap=float(self.config.get('freezing_merge_gap', 0.3)),
+            min_non_freeze_gap=float(self.config.get('freezing_min_non_freeze_gap', 0.2)),
+            smoothing_window=float(self.config.get('freezing_smoothing_window', 0.3)),
+        )
+
+    def _run_freezing_detection(
+        self,
+        video_path: str,
+        fps: float,
+        total_frames: int,
+        params: FreezingDetectionParams
+    ):
+        """在后台线程执行自动检测。"""
+        last_progress = -1.0
+
+        def progress_callback(progress: float):
+            nonlocal last_progress
+            if progress < 1.0 and progress - last_progress < 0.02:
+                return
+            last_progress = progress
+            self._run_on_ui_thread(
+                lambda value=progress: self.timing_panel.update_auto_detect_status(
+                    f"自动检测中: {value * 100:.0f}%"
+                )
+            )
+
+        try:
+            intervals = self.freezing_detection_service.detect_freezing(
+                video_path,
+                fps,
+                total_frames,
+                params,
+                progress_callback
+            )
+        except Exception as exc:
+            self._run_on_ui_thread(
+                lambda message=str(exc): self._on_freezing_detection_failed(message)
+            )
+            return
+
+        def finish_on_ui_thread(
+            detected_intervals=intervals,
+            source_path=video_path
+        ):
+            self._on_freezing_detection_completed(detected_intervals, source_path)
+
+        self._run_on_ui_thread(finish_on_ui_thread)
+
+    def _on_freezing_detection_completed(
+        self,
+        intervals: List[FreezingInterval],
+        source_video_path: str
+    ):
+        """处理自动检测完成事件。"""
+        self._detection_running = False
+        self.timing_panel.set_auto_detect_running(False)
+
+        if self.video_model.video_path != source_video_path:
+            self.timing_panel.update_auto_detect_status("检测结果已丢弃: 视频已更换")
+            messagebox.showinfo("自动检测完成", "视频已更换，旧视频的检测结果未导入。")
+            return
+
+        interval_count = len(intervals)
+        if interval_count == 0:
+            self.timing_panel.update_auto_detect_status("检测完成: 未发现候选区间")
+            messagebox.showinfo("自动检测完成", "未检测到符合条件的停止区间。")
+            return
+
+        total_duration = sum(interval.duration for interval in intervals)
+        self.timing_panel.update_auto_detect_status(
+            f"检测完成: {interval_count} 个候选区间"
+        )
+
+        message = (
+            f"检测到 {interval_count} 个停止区间，"
+            f"总时长 {total_duration:.3f} 秒。\n\n"
+        )
+        if self.record_model.count > 0:
+            message += f"当前已有 {self.record_model.count} 个记录点，导入会清空并覆盖。\n\n"
+        message += "是否导入为记录点？"
+
+        if messagebox.askyesno("自动检测完成", message):
+            self._import_freezing_intervals(intervals)
+            self.timing_panel.update_auto_detect_status(
+                f"已导入 {interval_count} 个区间，共 {self.record_model.count} 个记录点"
+            )
+        else:
+            self.timing_panel.update_auto_detect_status("检测结果未导入")
+
+    def _on_freezing_detection_failed(self, error_message: str):
+        """处理自动检测失败事件。"""
+        self._detection_running = False
+        self.timing_panel.set_auto_detect_running(False)
+        self.timing_panel.update_auto_detect_status("自动检测失败")
+        messagebox.showerror("错误", f"自动检测失败: {error_message}")
+
+    def _import_freezing_intervals(self, intervals: List[FreezingInterval]):
+        """将检测区间覆盖导入为成对时间点记录。"""
+        self.record_model.clear()
+        self.timing_panel.clear_records()
+
+        for interval in sorted(intervals, key=lambda item: item.start):
+            start_record = self.record_model.add_record(interval.start, interval.start_frame)
+            self._add_record_to_view(start_record)
+
+            end_record = self.record_model.add_record(interval.end, interval.end_frame)
+            self._add_record_to_view(end_record)
+
+        self.timing_panel.update_stats(self.record_model.count, self.video_model.current_time)
+
+    def _run_on_ui_thread(self, callback):
+        """安全地把后台线程结果切回 Tk 主线程。"""
+        try:
+            root = self.timing_panel.parent.winfo_toplevel()
+            if root.winfo_exists():
+                root.after(0, callback)
+        except tk.TclError:
+            pass
 
     def update_record_key(self, new_key: str):
         """更新记录按键

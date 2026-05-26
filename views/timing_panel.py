@@ -16,6 +16,7 @@ class TimingPanel:
         self.on_delete: Optional[Callable] = None
         self.on_clear: Optional[Callable] = None
         self.on_export: Optional[Callable] = None
+        self.on_auto_detect: Optional[Callable] = None
         self.on_update_key: Optional[Callable] = None
         self.on_record_double_click: Optional[Callable] = None
 
@@ -52,6 +53,13 @@ class TimingPanel:
 
         clear_btn = ttk.Button(controls, text="清空记录", command=self._on_clear)
         clear_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.auto_detect_btn = ttk.Button(
+            controls,
+            text="开始自动检测",
+            command=self._on_auto_detect
+        )
+        self.auto_detect_btn.pack(side=tk.LEFT, padx=(0, 10))
 
         export_btn = ttk.Button(controls, text="导出Excel", command=self._on_export)
         export_btn.pack(side=tk.LEFT)
@@ -102,6 +110,15 @@ class TimingPanel:
         self.stats_label = ttk.Label(self.frame, text="记录点数: 0", font=('Arial', 9))
         self.stats_label.grid(row=4, column=0, pady=(10, 0))
 
+        self.auto_detect_status_var = tk.StringVar(value="")
+        self.auto_detect_status_label = ttk.Label(
+            self.frame,
+            textvariable=self.auto_detect_status_var,
+            font=('Arial', 9),
+            foreground='gray'
+        )
+        self.auto_detect_status_label.grid(row=5, column=0, pady=(4, 0))
+
     def _on_record(self):
         """记录按钮点击"""
         if self.on_record:
@@ -121,6 +138,11 @@ class TimingPanel:
         """导出按钮点击"""
         if self.on_export:
             self.on_export()
+
+    def _on_auto_detect(self):
+        """自动检测按钮点击"""
+        if self.on_auto_detect:
+            self.on_auto_detect()
 
     def _on_update_key(self):
         """更新按键"""
@@ -157,6 +179,17 @@ class TimingPanel:
             )
         else:
             self.stats_label.config(text=f"记录点数: {count}")
+
+    def set_auto_detect_running(self, running: bool):
+        """设置自动检测按钮状态"""
+        if running:
+            self.auto_detect_btn.config(text="检测中...", state='disabled')
+        else:
+            self.auto_detect_btn.config(text="自动检测停止", state='normal')
+
+    def update_auto_detect_status(self, text: str):
+        """更新自动检测状态提示"""
+        self.auto_detect_status_var.set(text)
 
     def add_record(self, sequence: int, time_display: str, video_time: float, interval: float):
         """添加记录到列表
