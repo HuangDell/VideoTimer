@@ -1,56 +1,59 @@
-"""主入口文件"""
-import threading
-from views.instance_selector import InstanceSelector
-from controllers.main_controller import MainController
+"""Application entry point."""
+from __future__ import annotations
 
 
 def main():
-    """主函数"""
-    # 检查依赖
+    """Run the PySide6 annotation workbench."""
     try:
-        import cv2
-        import keyboard
-        import pandas
-        import openpyxl
-        from PIL import Image, ImageTk
-    except ImportError as e:
-        print(f"缺少必要的包: {e}")
-        print("请安装必要的包:")
-        print("pip install opencv-python keyboard pandas openpyxl pillow")
-        return
+        from views.qt_workbench import run_qt_workbench
+    except ImportError as exc:
+        print(f"缺少必要依赖: {exc}")
+        print("请安装依赖: pip install -r requirements.txt")
+        return 1
 
-    # 显示实例选择对话框
+    return run_qt_workbench()
+
+
+def legacy_main():
+    """Run the previous Tkinter multi-instance timer UI."""
+    import threading
+
+    from controllers.main_controller import MainController
+    from views.instance_selector import InstanceSelector
+
+    try:
+        import cv2  # noqa: F401
+        import keyboard  # noqa: F401
+        import openpyxl  # noqa: F401
+        import pandas  # noqa: F401
+        from PIL import Image, ImageTk  # noqa: F401
+    except ImportError as exc:
+        print(f"缺少必要的包: {exc}")
+        print("请安装旧版依赖: pip install opencv-python keyboard pandas openpyxl pillow")
+        return 1
+
     instance_count, record_keys = InstanceSelector.show()
-
     if instance_count == 0:
-        return
+        return 0
 
-    # 创建多个实例并在不同线程中运行
     def run_app(instance_id: int, record_key: str):
-        """在独立线程中运行应用实例
-        
-        Args:
-            instance_id: 实例ID
-            record_key: 记录按键
-        """
         app = MainController(instance_id=instance_id, record_key=record_key)
         app.run()
 
     threads = []
-    for i in range(instance_count):
+    for index in range(instance_count):
         thread = threading.Thread(
             target=run_app,
-            args=(i + 1, record_keys[i]),
-            daemon=False
+            args=(index + 1, record_keys[index]),
+            daemon=False,
         )
         thread.start()
         threads.append(thread)
 
-    # 等待所有线程完成（实际上会一直运行直到窗口关闭）
     for thread in threads:
         thread.join()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())
