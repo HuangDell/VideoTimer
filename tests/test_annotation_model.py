@@ -65,6 +65,29 @@ class AnnotationModelTest(unittest.TestCase):
             self.assertEqual(loaded.intervals[0].start_frame, 10)
             self.assertEqual(loaded.intervals[0].end_frame, 20)
 
+    def test_virtual_split_sidecar_uses_logical_name_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "mouse.avi"
+            logical_path = Path(directory) / "mouse_1.avi"
+            self.model.set_video_context(
+                str(logical_path),
+                10.0,
+                100,
+                {
+                    "source_video_path": str(source_path),
+                    "crop_role": "upper",
+                    "split_ratio": 0.42,
+                },
+            )
+            sidecar_path = self.model.save_sidecar()
+            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(sidecar_path.name, "mouse_1.videotimer.json")
+            self.assertEqual(payload["video_metadata"]["path"], str(logical_path))
+            self.assertEqual(payload["video_metadata"]["source_video_path"], str(source_path))
+            self.assertEqual(payload["video_metadata"]["crop_role"], "upper")
+            self.assertEqual(payload["video_metadata"]["split_ratio"], 0.42)
+
     def test_sidecar_load_clamps_older_metadata_to_current_video(self):
         with tempfile.TemporaryDirectory() as directory:
             video_path = Path(directory) / "mouse.avi"

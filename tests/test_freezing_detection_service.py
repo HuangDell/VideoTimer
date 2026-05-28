@@ -1,5 +1,6 @@
 import os
 import tempfile
+from unittest.mock import patch
 import unittest
 
 try:
@@ -10,12 +11,46 @@ try:
         FreezingDetectionParams,
         FreezingDetectionService,
     )
+    from services.video_crop_service import CROP_LOWER, CROP_UPPER
 except ModuleNotFoundError as exc:
     cv2 = None
     np = None
     OPENCV_IMPORT_ERROR = exc
 else:
     OPENCV_IMPORT_ERROR = None
+
+
+class FakeCapture:
+    def __init__(self, frames, fps):
+        self.frames = frames
+        self.fps = fps
+        self.index = 0
+
+    def isOpened(self):
+        return True
+
+    def get(self, prop):
+        if prop == cv2.CAP_PROP_FPS:
+            return self.fps
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return len(self.frames)
+        return 0
+
+    def read(self):
+        if self.index >= len(self.frames):
+            return False, None
+        frame = self.frames[self.index]
+        self.index += 1
+        return True, frame.copy()
+
+    def grab(self):
+        if self.index >= len(self.frames):
+            return False
+        self.index += 1
+        return True
+
+    def release(self):
+        pass
 
 
 @unittest.skipIf(OPENCV_IMPORT_ERROR is not None, f"OpenCV unavailable: {OPENCV_IMPORT_ERROR}")
@@ -119,6 +154,55 @@ class FreezingDetectionServiceTest(unittest.TestCase):
         self.assertGreaterEqual(intervals[0].duration, 0.5)
         self.assertGreaterEqual(intervals[-1].start, 1.5)
         self.assertGreaterEqual(intervals[-1].duration, 0.5)
+
+    def test_detect_freezing_applies_virtual_crop(self):
+        fps = 1.0
+        frames = []
+        for index in range(4):
+            frame = np.zeros((4, 4, 3), dtype=np.uint8)
+            frame[:2, :] = 255 if index % 2 else 0
+            frames.append(frame)
+        params = FreezingDetectionParams(
+            sample_rate=1.0,
+            analysis_width=4,
+            pixel_diff_threshold=5,
+            motion_threshold=0.1,
+            min_freeze_duration=1.1,
+            merge_gap=0.1,
+            min_non_freeze_gap=0.1,
+            smoothing_window=0.1,
+        )
+
+        with patch(
+            "services.freezing_detection_service.cv2.VideoCapture",
+            lambda _path: FakeCapture(frames, fps),
+        ):
+            lower_intervals = self.service.detect_freezing(
+                "synthetic.avi",
+                fps,
+                len(frames),
+                params,
+                crop_role=CROP_LOWER,
+                split_ratio=0.5,
+            )
+
+        with patch(
+            "services.freezing_detection_service.cv2.VideoCapture",
+            lambda _path: FakeCapture(frames, fps),
+        ):
+            upper_intervals = self.service.detect_freezing(
+                "synthetic.avi",
+                fps,
+                len(frames),
+                params,
+                crop_role=CROP_UPPER,
+                split_ratio=0.5,
+            )
+
+        self.assertEqual(len(lower_intervals), 1)
+        self.assertEqual(lower_intervals[0].start_frame, 0)
+        self.assertEqual(lower_intervals[0].end_frame, 4)
+        self.assertEqual(upper_intervals, [])
 
     def _mouse_frame(self, frame_size, square_x):
         frame = np.zeros((frame_size[1], frame_size[0], 3), dtype=np.uint8)

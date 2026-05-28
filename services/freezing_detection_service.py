@@ -5,6 +5,8 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from services.video_crop_service import apply_horizontal_crop
+
 
 @dataclass(frozen=True)
 class FreezingDetectionParams:
@@ -41,6 +43,8 @@ class FreezingDetectionService:
         total_frames: int,
         params: Optional[FreezingDetectionParams] = None,
         progress_callback: Optional[Callable[[float], None]] = None,
+        crop_role: Optional[str] = None,
+        split_ratio: Optional[float] = None,
     ) -> List[FreezingInterval]:
         """Detect freezing intervals from a video file.
 
@@ -80,6 +84,7 @@ class FreezingDetectionService:
                 if not ret:
                     break
 
+                frame = apply_horizontal_crop(frame, crop_role, split_ratio)
                 processed_frame = self._preprocess_frame(frame, params)
                 if previous_frame is None:
                     motion_ratio = 0.0

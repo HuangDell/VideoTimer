@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 from uuid import uuid4
@@ -29,12 +30,15 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QUndoCommand,
+    QUndoGroup,
     QUndoStack,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFileSystemModel,
     QHBoxLayout,
@@ -47,6 +51,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStyle,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
@@ -67,6 +72,13 @@ from services.freezing_detection_service import (
     FreezingDetectionParams,
     FreezingDetectionService,
     FreezingInterval,
+)
+from services.video_crop_service import (
+    CROP_LOWER,
+    CROP_UPPER,
+    apply_horizontal_crop,
+    clamp_split_ratio,
+    logical_split_video_path,
 )
 from utils.config import Config
 from utils.time_formatter import TimeFormatter
@@ -124,6 +136,110 @@ class VideoCanvas(QLabel):
         )
         self.setText("")
         self.setPixmap(scaled)
+
+
+class SplitPreviewCanvas(QLabel):
+    """Preview surface with a draggable horizontal split line."""
+
+    split_changed = Signal(float)
+
+    def __init__(self, frame, split_ratio: float = 0.5):
+        super().__init__()
+        self._source_pixmap = frame_to_pixmap(frame)
+        self._split_ratio = clamp_split_ratio(split_ratio)
+        self._display_rect = QRect()
+        self._dragging = False
+        self.setMinimumSize(720, 420)
+        self.setMouseTracking(True)
+        self.setStyleSheet("QLabel { background: #0b0d10; border: 1px solid #444b55; }")
+
+    @property
+    def split_ratio(self) -> float:
+        return self._split_ratio
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#0b0d10"))
+        if self._source_pixmap.isNull():
+            return
+
+        scaled = self._source_pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        left = (self.width() - scaled.width()) // 2
+        top = (self.height() - scaled.height()) // 2
+        self._display_rect = QRect(left, top, scaled.width(), scaled.height())
+        painter.drawPixmap(left, top, scaled)
+
+        split_y = int(self._display_rect.top() + self._display_rect.height() * self._split_ratio)
+        painter.setPen(QPen(QColor("#f4b400"), 3))
+        painter.drawLine(self._display_rect.left(), split_y, self._display_rect.right(), split_y)
+        painter.setPen(QPen(QColor("#111418"), 1))
+        painter.setBrush(QColor("#f4b400"))
+        painter.drawEllipse(QPoint(self._display_rect.center().x(), split_y), 7, 7)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._set_split_from_y(int(event.position().y()))
+
+    def mouseMoveEvent(self, event):
+        self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+        if self._dragging:
+            self._set_split_from_y(int(event.position().y()))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self._set_split_from_y(int(event.position().y()))
+
+    def leaveEvent(self, event):
+        if not self._dragging:
+            self.unsetCursor()
+        super().leaveEvent(event)
+
+    def _set_split_from_y(self, y: int):
+        if self._display_rect.height() <= 0:
+            return
+        ratio = (y - self._display_rect.top()) / max(1, self._display_rect.height())
+        self._split_ratio = clamp_split_ratio(ratio)
+        self.split_changed.emit(self._split_ratio)
+        self.update()
+
+
+class SplitPreviewDialog(QDialog):
+    """Dialog for choosing a horizontal top/bottom split."""
+
+    def __init__(self, frame, split_ratio: float = 0.5, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("拆分上下鼠")
+        self.resize(820, 560)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("拖动黄色水平线设置上下两只鼠的分割位置。上方为 _1，下方为 _2。"))
+        self.preview = SplitPreviewCanvas(frame, split_ratio)
+        layout.addWidget(self.preview, 1)
+        self.ratio_label = QLabel()
+        layout.addWidget(self.ratio_label)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.preview.split_changed.connect(self._update_ratio_label)
+        self._update_ratio_label(self.preview.split_ratio)
+
+    @property
+    def split_ratio(self) -> float:
+        return self.preview.split_ratio
+
+    def _update_ratio_label(self, ratio: float):
+        self.ratio_label.setText(f"当前分割比例: {ratio:.3f}")
 
 
 class TimelineWidget(QWidget):
@@ -382,7 +498,7 @@ class ThumbnailCache:
         self.max_items = max_items
         self.capture = None
         self.total_frames = 0
-        self.cache: OrderedDict[int, QPixmap] = OrderedDict()
+        self.cache: OrderedDict[tuple[int, Optional[str], Optional[float]], QPixmap] = OrderedDict()
 
     def load_video(self, video_path: str, total_frames: int):
         self.release()
@@ -390,25 +506,33 @@ class ThumbnailCache:
         self.total_frames = max(0, int(total_frames))
         self.cache.clear()
 
-    def get(self, frame: int, size: QSize = QSize(180, 104)) -> Optional[QPixmap]:
+    def get(
+        self,
+        frame: int,
+        size: QSize = QSize(180, 104),
+        crop_role: Optional[str] = None,
+        split_ratio: Optional[float] = None,
+    ) -> Optional[QPixmap]:
         if self.capture is None or not self.capture.isOpened() or self.total_frames <= 0:
             return None
         frame = max(0, min(int(frame), max(0, self.total_frames - 1)))
-        if frame in self.cache:
-            pixmap = self.cache.pop(frame)
-            self.cache[frame] = pixmap
+        cache_key = (frame, crop_role, round(split_ratio, 6) if split_ratio is not None else None)
+        if cache_key in self.cache:
+            pixmap = self.cache.pop(cache_key)
+            self.cache[cache_key] = pixmap
             return pixmap
 
         self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame)
         ok, image = self.capture.read()
         if not ok:
             return None
+        image = apply_horizontal_crop(image, crop_role, split_ratio)
         pixmap = frame_to_pixmap(image).scaled(
             size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.cache[frame] = pixmap
+        self.cache[cache_key] = pixmap
         while len(self.cache) > self.max_items:
             self.cache.popitem(last=False)
         return pixmap
@@ -431,12 +555,18 @@ class FreezingDetectionWorker(QObject):
         fps: float,
         total_frames: int,
         params: FreezingDetectionParams,
+        logical_video_path: Optional[str] = None,
+        crop_role: Optional[str] = None,
+        split_ratio: Optional[float] = None,
     ):
         super().__init__()
         self.video_path = video_path
+        self.logical_video_path = logical_video_path or video_path
         self.fps = fps
         self.total_frames = total_frames
         self.params = params
+        self.crop_role = crop_role
+        self.split_ratio = split_ratio
         self.service = FreezingDetectionService()
 
     def run(self):
@@ -447,11 +577,13 @@ class FreezingDetectionWorker(QObject):
                 self.total_frames,
                 self.params,
                 self.progress.emit,
+                self.crop_role,
+                self.split_ratio,
             )
         except Exception as exc:
             self.failed.emit(str(exc))
             return
-        self.finished.emit(intervals, self.video_path)
+        self.finished.emit(intervals, self.logical_video_path)
 
 
 class AddIntervalCommand(QUndoCommand):
@@ -519,6 +651,22 @@ class ReplaceIntervalsCommand(QUndoCommand):
         self.window._apply_replace_intervals(self.before)
 
 
+@dataclass
+class VideoSession:
+    """Per-tab logical video state."""
+
+    source_path: str
+    logical_path: str
+    title: str
+    canvas: VideoCanvas
+    annotation_model: AnnotationModel
+    undo_stack: QUndoStack
+    crop_role: Optional[str] = None
+    split_ratio: Optional[float] = None
+    loaded_sidecar: bool = False
+    metadata_dirty: bool = False
+
+
 class QtAnnotationWorkbench(QMainWindow):
     """Premiere-style single-window annotation workbench."""
 
@@ -529,8 +677,11 @@ class QtAnnotationWorkbench(QMainWindow):
         self.video_model = VideoModel()
         self.annotation_model = AnnotationModel()
         self.export_service = ExportService()
+        self.undo_group = QUndoGroup(self)
         self.undo_stack = QUndoStack(self)
         self.thumbnail_cache = ThumbnailCache()
+        self.video_sessions: List[VideoSession] = []
+        self.current_session_index = -1
         self.current_frame = 0
         self.pending_start_frame: Optional[int] = None
         self.playing = False
@@ -540,8 +691,6 @@ class QtAnnotationWorkbench(QMainWindow):
 
         self.play_timer = QTimer(self)
         self.play_timer.timeout.connect(self._advance_playback)
-        self.undo_stack.cleanChanged.connect(self._sync_dirty_from_undo_stack)
-        self.undo_stack.indexChanged.connect(lambda _index: self._sync_dirty_from_undo_stack())
 
         self.setWindowTitle("VideoTimer 标注工作台")
         self.resize(1500, 920)
@@ -564,6 +713,9 @@ class QtAnnotationWorkbench(QMainWindow):
         self.auto_detect_action = QAction("自动检测", self)
         self.auto_detect_action.triggered.connect(self.auto_detect_freezing)
 
+        self.split_action = QAction("拆分上下鼠", self)
+        self.split_action.triggered.connect(self.split_top_bottom_mice)
+
         self.delete_action = QAction("删除区间", self)
         self.delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         self.delete_action.triggered.connect(self.delete_selected_interval)
@@ -571,9 +723,9 @@ class QtAnnotationWorkbench(QMainWindow):
         self.clear_action = QAction("清空区间", self)
         self.clear_action.triggered.connect(self.clear_intervals)
 
-        self.undo_action = self.undo_stack.createUndoAction(self, "撤销")
+        self.undo_action = self.undo_group.createUndoAction(self, "撤销")
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
-        self.redo_action = self.undo_stack.createRedoAction(self, "重做")
+        self.redo_action = self.undo_group.createRedoAction(self, "重做")
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
 
     def _build_ui(self):
@@ -584,6 +736,8 @@ class QtAnnotationWorkbench(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.split_action)
         toolbar.addSeparator()
         toolbar.addAction(self.auto_detect_action)
         toolbar.addAction(self.export_action)
@@ -644,8 +798,11 @@ class QtAnnotationWorkbench(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        self.video_tabs = QTabWidget()
+        self.video_tabs.currentChanged.connect(self._on_video_tab_changed)
         self.video_canvas = VideoCanvas()
-        layout.addWidget(self.video_canvas, 1)
+        self.video_tabs.addTab(self.video_canvas, "视频")
+        layout.addWidget(self.video_tabs, 1)
 
         controls = QHBoxLayout()
         self.play_button = QPushButton()
@@ -724,6 +881,8 @@ class QtAnnotationWorkbench(QMainWindow):
             QMenuBar, QMenu, QToolBar { background: #20242b; color: #e8eaed; }
             QPushButton, QComboBox { background: #2a2f37; color: #f1f3f4; border: 1px solid #444b55; padding: 5px 8px; }
             QPushButton:hover, QComboBox:hover { background: #353b45; }
+            QTabBar::tab { background: #20242b; color: #ffffff; border: 1px solid #444b55; padding: 6px 10px; }
+            QTabBar::tab:selected { background: #2a2f37; color: #ffffff; }
             QTableWidget, QTreeView { background: #111418; alternate-background-color: #171a1f; color: #e8eaed; gridline-color: #30363f; border: 1px solid #30363f; }
             QHeaderView::section { background: #20242b; color: #cfd4dc; border: 0; padding: 6px; }
             QLabel { color: #e8eaed; }
@@ -743,6 +902,157 @@ class QtAnnotationWorkbench(QMainWindow):
         if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
             self.load_video(str(path))
 
+    def _current_session(self) -> Optional[VideoSession]:
+        if 0 <= self.current_session_index < len(self.video_sessions):
+            return self.video_sessions[self.current_session_index]
+        return None
+
+    def _has_current_session(self) -> bool:
+        return self._current_session() is not None
+
+    def _session_metadata_values(
+        self,
+        source_path: str,
+        logical_path: str,
+        crop_role: Optional[str],
+        split_ratio: Optional[float],
+    ) -> dict:
+        metadata = {
+            "source_video_path": source_path,
+            "source_filename": Path(source_path).name,
+            "logical_filename": Path(logical_path).name,
+        }
+        if crop_role in {CROP_UPPER, CROP_LOWER} and split_ratio is not None:
+            metadata.update(
+                {
+                    "crop_role": crop_role,
+                    "split_ratio": clamp_split_ratio(split_ratio),
+                }
+            )
+        return metadata
+
+    def _session_metadata(self, session: VideoSession) -> dict:
+        return self._session_metadata_values(
+            session.source_path,
+            session.logical_path,
+            session.crop_role,
+            session.split_ratio,
+        )
+
+    def _create_video_session(
+        self,
+        source_path: str,
+        logical_path: str,
+        title: str,
+        crop_role: Optional[str] = None,
+        split_ratio: Optional[float] = None,
+    ) -> VideoSession:
+        annotation_model = AnnotationModel()
+        annotation_model.set_video_context(
+            logical_path,
+            self.video_model.video_fps,
+            self.video_model.total_frames,
+            self._session_metadata_values(source_path, logical_path, crop_role, split_ratio),
+        )
+
+        loaded_sidecar = False
+        try:
+            loaded_sidecar = annotation_model.load_sidecar(logical_path)
+        except Exception as exc:
+            annotation_model.set_video_context(
+                logical_path,
+                self.video_model.video_fps,
+                self.video_model.total_frames,
+                self._session_metadata_values(source_path, logical_path, crop_role, split_ratio),
+            )
+            QMessageBox.warning(self, "标注加载失败", f"标注文件无法加载，已使用空标注。\n\n{exc}")
+
+        undo_stack = QUndoStack(self)
+        undo_stack.cleanChanged.connect(self._sync_dirty_from_undo_stack)
+        undo_stack.indexChanged.connect(lambda _index: self._sync_dirty_from_undo_stack())
+        undo_stack.setClean()
+
+        return VideoSession(
+            source_path=source_path,
+            logical_path=logical_path,
+            title=title,
+            canvas=VideoCanvas(),
+            annotation_model=annotation_model,
+            undo_stack=undo_stack,
+            crop_role=crop_role,
+            split_ratio=split_ratio,
+            loaded_sidecar=loaded_sidecar,
+        )
+
+    def _install_video_sessions(self, sessions: List[VideoSession], active_index: int = 0):
+        self.video_tabs.blockSignals(True)
+        for session in self.video_sessions:
+            self.undo_group.removeStack(session.undo_stack)
+        while self.video_tabs.count():
+            self.video_tabs.removeTab(0)
+
+        self.video_sessions = sessions
+        for session in self.video_sessions:
+            self.undo_group.addStack(session.undo_stack)
+            self.video_tabs.addTab(session.canvas, session.title)
+
+        self.current_session_index = -1
+        if self.video_sessions:
+            active_index = max(0, min(active_index, len(self.video_sessions) - 1))
+            self.video_tabs.setCurrentIndex(active_index)
+        self.video_tabs.blockSignals(False)
+        self._activate_video_session(active_index if self.video_sessions else -1)
+
+    def _activate_video_session(self, index: int):
+        if not (0 <= index < len(self.video_sessions)):
+            self.current_session_index = -1
+            self.annotation_model = AnnotationModel()
+            self.undo_stack = QUndoStack(self)
+            self.undo_group.setActiveStack(None)
+            return
+
+        self.current_session_index = index
+        session = self.video_sessions[index]
+        self.annotation_model = session.annotation_model
+        self.undo_stack = session.undo_stack
+        self.video_canvas = session.canvas
+        self.undo_group.setActiveStack(session.undo_stack)
+        self.pending_start_frame = None
+        self.timeline.set_pending_start(None)
+        self._refresh_all_views()
+        self._render_current_frame()
+        self._update_video_info_label()
+
+    def _on_video_tab_changed(self, index: int):
+        if 0 <= index < len(self.video_sessions):
+            self._activate_video_session(index)
+
+    def _update_video_info_label(self):
+        session = self._current_session()
+        if not session:
+            self.video_info_label.setText("未加载视频")
+            return
+        duration = self.time_formatter.format_time(self.video_model.duration)
+        crop_text = ""
+        if session.crop_role == CROP_UPPER:
+            crop_text = " | 上半区 _1"
+        elif session.crop_role == CROP_LOWER:
+            crop_text = " | 下半区 _2"
+        self.video_info_label.setText(
+            f"{Path(session.logical_path).name} | {duration} | "
+            f"{self.video_model.total_frames} frames | {self.video_model.video_fps:.2f} fps"
+            f"{crop_text}"
+        )
+
+    def _export_video_model_for_current_session(self) -> VideoModel:
+        session = self._current_session()
+        export_model = VideoModel()
+        export_model.video_path = session.logical_path if session else self.video_model.video_path
+        export_model.video_fps = self.video_model.video_fps
+        export_model.total_frames = self.video_model.total_frames
+        export_model.current_frame = self.current_frame
+        return export_model
+
     def load_video(self, file_path: str):
         if not self._confirm_save_if_dirty():
             return
@@ -756,39 +1066,88 @@ class QtAnnotationWorkbench(QMainWindow):
             return
 
         self.current_frame = 0
-        self.annotation_model.set_video_context(
-            file_path,
-            self.video_model.video_fps,
-            self.video_model.total_frames,
-        )
-
-        loaded_sidecar = False
-        try:
-            loaded_sidecar = self.annotation_model.load_sidecar(file_path)
-        except Exception as exc:
-            self.annotation_model.set_video_context(
-                file_path,
-                self.video_model.video_fps,
-                self.video_model.total_frames,
-            )
-            QMessageBox.warning(self, "标注加载失败", f"标注文件无法加载，已使用空标注。\n\n{exc}")
+        session = self._create_video_session(file_path, file_path, Path(file_path).name)
 
         self.thumbnail_cache.load_video(file_path, self.video_model.total_frames)
-        self.undo_stack.clear()
-        self.undo_stack.setClean()
+        self._install_video_sessions([session])
         self.pending_start_frame = None
         self.timeline.set_video(self.video_model.total_frames, self.video_model.video_fps)
         self.timeline.set_pending_start(None)
         self._refresh_all_views()
         self._render_current_frame()
 
-        duration = self.time_formatter.format_time(self.video_model.duration)
-        self.video_info_label.setText(
-            f"{Path(file_path).name} | {duration} | "
-            f"{self.video_model.total_frames} frames | {self.video_model.video_fps:.2f} fps"
-        )
+        self._update_video_info_label()
         self.statusBar().showMessage(
-            "已加载标注文件" if loaded_sidecar else "已加载视频，未发现同名标注文件",
+            "已加载标注文件" if session.loaded_sidecar else "已加载视频，未发现同名标注文件",
+            5000,
+        )
+        self._refresh_actions()
+
+    def split_top_bottom_mice(self):
+        if not self.video_model.video_capture or not self.video_model.video_path:
+            QMessageBox.information(self, "提示", "请先加载视频")
+            return
+
+        is_existing_split = (
+            len(self.video_sessions) == 2
+            and {session.crop_role for session in self.video_sessions} == {CROP_UPPER, CROP_LOWER}
+        )
+        if not is_existing_split and self._has_unsaved_changes():
+            if not self._confirm_save_if_dirty():
+                return
+
+        capture = self.video_model.video_capture
+        capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+        ok, frame = capture.read()
+        if not ok:
+            QMessageBox.warning(self, "提示", "无法读取当前帧用于裁剪预览")
+            return
+
+        current_ratio = 0.5
+        if is_existing_split and self.video_sessions[0].split_ratio is not None:
+            current_ratio = self.video_sessions[0].split_ratio
+
+        dialog = SplitPreviewDialog(frame, current_ratio, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        split_ratio = clamp_split_ratio(dialog.split_ratio)
+        source_path = self.video_model.video_path
+
+        if is_existing_split:
+            for session in self.video_sessions:
+                session.split_ratio = split_ratio
+                session.annotation_model.update_video_metadata(self._session_metadata(session))
+                session.metadata_dirty = True
+            self.thumbnail_cache.cache.clear()
+            self._refresh_all_views()
+            self._render_current_frame()
+            self.statusBar().showMessage("已更新上下鼠分割线，请保存各标签页标注", 5000)
+            return
+
+        upper_path = logical_split_video_path(source_path, 1)
+        lower_path = logical_split_video_path(source_path, 2)
+        sessions = [
+            self._create_video_session(
+                source_path,
+                upper_path,
+                Path(upper_path).name,
+                CROP_UPPER,
+                split_ratio,
+            ),
+            self._create_video_session(
+                source_path,
+                lower_path,
+                Path(lower_path).name,
+                CROP_LOWER,
+                split_ratio,
+            ),
+        ]
+        self._install_video_sessions(sessions)
+        self.thumbnail_cache.cache.clear()
+        loaded_count = sum(1 for session in sessions if session.loaded_sidecar)
+        self.statusBar().showMessage(
+            f"已创建上下鼠标签页，加载了 {loaded_count} 个已有标注文件",
             5000,
         )
         self._refresh_actions()
@@ -844,6 +1203,9 @@ class QtAnnotationWorkbench(QMainWindow):
         if not ok:
             self._pause_playback()
             return
+        session = self._current_session()
+        if session:
+            frame = apply_horizontal_crop(frame, session.crop_role, session.split_ratio)
         self.video_canvas.set_frame(frame)
         self.video_model.current_frame = self.current_frame
         self.timeline.set_current_frame(self.current_frame)
@@ -866,20 +1228,40 @@ class QtAnnotationWorkbench(QMainWindow):
             self._restart_play_timer()
 
     def save_annotations(self) -> bool:
-        if not self.video_model.video_path:
+        session = self._current_session()
+        if not session:
             return True
         try:
-            path = self.annotation_model.save_sidecar(self.video_model.video_path)
+            path = self._save_session_annotations(session)
         except Exception as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return False
-        self.undo_stack.setClean()
         self.statusBar().showMessage(f"标注已保存: {path}", 5000)
         self._refresh_actions()
         return True
 
+    def _save_session_annotations(self, session: VideoSession) -> Path:
+        session.annotation_model.update_video_metadata(self._session_metadata(session), dirty=False)
+        path = session.annotation_model.save_sidecar(session.logical_path)
+        session.undo_stack.setClean()
+        session.metadata_dirty = False
+        session.annotation_model.dirty = False
+        return path
+
+    def _save_dirty_sessions(self) -> bool:
+        try:
+            for session in self.video_sessions:
+                if session.annotation_model.dirty or session.metadata_dirty or not session.undo_stack.isClean():
+                    self._save_session_annotations(session)
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return False
+        self._refresh_actions()
+        return True
+
     def export_excel(self):
-        if not self.video_model.video_path:
+        session = self._current_session()
+        if not session:
             QMessageBox.information(self, "提示", "请先加载视频")
             return
         if not self.annotation_model.intervals:
@@ -897,11 +1279,11 @@ class QtAnnotationWorkbench(QMainWindow):
             "Test": ExportType.TEST,
         }[choice]
 
-        default_name = f"{Path(self.video_model.video_path).stem}.xlsx"
+        default_name = f"{Path(session.logical_path).stem}.xlsx"
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "保存 Excel 文件",
-            str(Path(self.video_model.video_path).with_name(default_name)),
+            str(Path(session.logical_path).with_name(default_name)),
             "Excel files (*.xlsx);;All files (*.*)",
         )
         if not file_path:
@@ -911,13 +1293,15 @@ class QtAnnotationWorkbench(QMainWindow):
             self.annotation_model.intervals,
             self.video_model.video_fps,
         )
-        if self.export_service.export("excel", records, self.video_model, file_path, export_type):
+        export_model = self._export_video_model_for_current_session()
+        if self.export_service.export("excel", records, export_model, file_path, export_type):
             QMessageBox.information(self, "成功", f"数据已导出到:\n{file_path}")
         else:
             QMessageBox.critical(self, "错误", "导出失败")
 
     def auto_detect_freezing(self):
-        if not self.video_model.video_path:
+        session = self._current_session()
+        if not session:
             QMessageBox.information(self, "提示", "请先加载视频")
             return
         if self._detection_thread is not None:
@@ -941,6 +1325,9 @@ class QtAnnotationWorkbench(QMainWindow):
             self.video_model.video_fps,
             self.video_model.total_frames,
             params,
+            session.logical_path,
+            session.crop_role,
+            session.split_ratio,
         )
         self._detection_worker.moveToThread(self._detection_thread)
         self._detection_thread.started.connect(self._detection_worker.run)
@@ -982,7 +1369,7 @@ class QtAnnotationWorkbench(QMainWindow):
         )
 
     def _push_add_interval(self, start_frame: int, end_frame: int):
-        if not self.video_model.video_path:
+        if not self._has_current_session():
             return
         start_frame = self.annotation_model.clamp_frame(start_frame)
         end_frame = self.annotation_model.clamp_frame(end_frame)
@@ -1100,10 +1487,10 @@ class QtAnnotationWorkbench(QMainWindow):
     def _update_time_label(self):
         current = self.time_formatter.format_time(
             self.annotation_model.frame_to_seconds(self.current_frame)
-            if self.video_model.video_path
+            if self._has_current_session()
             else 0
         )
-        total = self.time_formatter.format_time(self.video_model.duration if self.video_model.video_path else 0)
+        total = self.time_formatter.format_time(self.video_model.duration if self._has_current_session() else 0)
         self.time_label.setText(f"{current} / {total}")
 
     def _on_table_item_clicked(self, item: QTableWidgetItem):
@@ -1160,7 +1547,12 @@ class QtAnnotationWorkbench(QMainWindow):
         if frame < 0:
             self.thumbnail_popup.hide()
             return
-        pixmap = self.thumbnail_cache.get(frame)
+        session = self._current_session()
+        pixmap = self.thumbnail_cache.get(
+            frame,
+            crop_role=session.crop_role if session else None,
+            split_ratio=session.split_ratio if session else None,
+        )
         if pixmap is None:
             self.thumbnail_popup.hide()
             return
@@ -1173,7 +1565,8 @@ class QtAnnotationWorkbench(QMainWindow):
         self.statusBar().showMessage(f"自动检测中: {progress * 100:.0f}%")
 
     def _on_detection_finished(self, intervals: List[FreezingInterval], source_video_path: str):
-        if self.video_model.video_path != source_video_path:
+        session = self._current_session()
+        if not session or session.logical_path != source_video_path:
             QMessageBox.information(self, "自动检测完成", "视频已切换，旧检测结果已丢弃。")
             return
         if not intervals:
@@ -1204,9 +1597,10 @@ class QtAnnotationWorkbench(QMainWindow):
             return
         validation_model = AnnotationModel()
         validation_model.set_video_context(
-            self.video_model.video_path,
+            session.logical_path,
             self.video_model.video_fps,
             self.video_model.total_frames,
+            self._session_metadata(session),
         )
         try:
             validation_model.replace_intervals(annotations)
@@ -1250,7 +1644,7 @@ class QtAnnotationWorkbench(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked == save_button:
-            return self.save_annotations()
+            return self._save_dirty_sessions()
         if clicked == discard_button:
             return True
         if clicked == cancel_button:
@@ -1258,20 +1652,34 @@ class QtAnnotationWorkbench(QMainWindow):
         return False
 
     def _refresh_actions(self):
-        has_video = bool(self.video_model.video_path)
-        self.save_action.setEnabled(has_video and self._has_unsaved_changes())
+        session = self._current_session()
+        has_video = session is not None
+        current_dirty = (
+            bool(session)
+            and (session.annotation_model.dirty or session.metadata_dirty or not session.undo_stack.isClean())
+        )
+        self.save_action.setEnabled(has_video and current_dirty)
         self.export_action.setEnabled(has_video and self.annotation_model.count > 0)
         self.delete_action.setEnabled(has_video and self.annotation_model.count > 0)
         self.clear_action.setEnabled(has_video and self.annotation_model.count > 0)
+        self.split_action.setEnabled(bool(self.video_model.video_path))
         if self._detection_thread is None:
             self.auto_detect_action.setEnabled(has_video)
 
     def _has_unsaved_changes(self) -> bool:
-        return self.annotation_model.dirty or not self.undo_stack.isClean()
+        return any(
+            session.annotation_model.dirty
+            or session.metadata_dirty
+            or not session.undo_stack.isClean()
+            for session in self.video_sessions
+        )
 
     def _sync_dirty_from_undo_stack(self):
-        if self.video_model.video_path:
-            self.annotation_model.dirty = not self.undo_stack.isClean()
+        for session in self.video_sessions:
+            if not session.undo_stack.isClean():
+                session.annotation_model.dirty = True
+            elif not session.metadata_dirty:
+                session.annotation_model.dirty = False
         self._refresh_actions()
 
     def keyPressEvent(self, event):
@@ -1289,7 +1697,7 @@ class QtAnnotationWorkbench(QMainWindow):
         if (
             event.key() == Qt.Key.Key_Z
             and event.modifiers() == Qt.KeyboardModifier.NoModifier
-            and self.video_model.video_path
+            and self._has_current_session()
         ):
             self._toggle_pending_interval_at_current_frame()
             return

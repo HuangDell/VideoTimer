@@ -98,7 +98,13 @@ class AnnotationModel:
     def count(self) -> int:
         return len(self._intervals)
 
-    def set_video_context(self, video_path: str, fps: float, total_frames: int):
+    def set_video_context(
+        self,
+        video_path: str,
+        fps: float,
+        total_frames: int,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
         self.video_path = video_path
         self.video_fps = fps if fps > 0 else 30.0
         self.total_frames = max(0, int(total_frames))
@@ -109,8 +115,15 @@ class AnnotationModel:
             "total_frames": self.total_frames,
             "duration": self.frame_to_seconds(self.total_frames),
         }
+        if metadata:
+            self.video_metadata.update(metadata)
         self._intervals = []
         self.dirty = False
+
+    def update_video_metadata(self, metadata: Dict[str, Any], dirty: bool = True):
+        self.video_metadata.update(metadata)
+        if dirty:
+            self.dirty = True
 
     def frame_to_seconds(self, frame: int) -> float:
         if self.video_fps <= 0:
