@@ -34,18 +34,18 @@ pip install -r requirements.txt
 ## 运行
 
 ```bash
-python main.py
+python3 main.py
 ```
 
-旧 Tkinter 多实例界面仍保留在 `legacy_main()` 中，可在 Python 交互或临时脚本中调用：
+项目只保留 PySide6 界面。旧 Tkinter 多实例界面、对应控制器和全局键盘监听服务已移除。
 
-```python
-from main import legacy_main
+## 项目结构
 
-legacy_main()
-```
-
-旧版界面额外依赖 `keyboard` 包。
+- `views/qt/workbench.py`: Qt 主窗口编排与业务事件协调。
+- `views/qt/widgets/`: 视频画布、时间轴、文件面板、播放面板、区间表格等可复用控件。
+- `views/qt/commands.py`: 标注新增、删除、修改、替换的撤销命令。
+- `views/qt/workers.py`: Qt 后台检测 worker。
+- `models/export_types.py`: Excel 导出类型枚举，供 UI 和导出服务共享。
 
 ## 标注数据
 
@@ -77,7 +77,7 @@ legacy_main()
 ## 测试
 
 ```bash
-python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
 当前仓库包含自动检测服务测试和标注模型测试。若 Windows 终端提示找不到 `python` 或 `py`，请先安装 Python 并确认它在 `PATH` 中。

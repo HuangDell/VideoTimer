@@ -1,11 +1,15 @@
 """导出服务类 - 使用策略模式支持多种导出格式"""
+from __future__ import annotations
+
 import pandas as pd
-from typing import List, Dict, Any, Tuple, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Tuple, Optional
 from abc import ABC, abstractmethod
 from models.record_model import RecordModel, TimeRecord
-from models.video_model import VideoModel
 from utils.time_formatter import TimeFormatter
-from views.export_dialog import ExportType
+from models.export_types import ExportType
+
+if TYPE_CHECKING:
+    from models.video_model import VideoModel
 
 
 # 各导出类型的时间区间配置（秒）
@@ -376,4 +380,3 @@ class ExportService:
             raise ValueError(f"不支持的导出格式: {format_type}")
 
         return self._strategies[format_type].export(records, video_model, file_path, export_type)
-

@@ -6,6 +6,7 @@ __all__ = [
     "AnnotationModel",
     "VideoModel",
     "RecordModel",
+    "ExportType",
 ]
 
 
@@ -26,4 +27,8 @@ def __getattr__(name):
         from .record_model import RecordModel
 
         return RecordModel
+    if name == "ExportType":
+        from .export_types import ExportType
+
+        return ExportType
     raise AttributeError(name)
