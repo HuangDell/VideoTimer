@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Iterable, List, Optional
 from uuid import uuid4
 
@@ -685,6 +686,8 @@ class QtAnnotationWorkbench(QMainWindow):
         self.current_frame = 0
         self.pending_start_frame: Optional[int] = None
         self.playing = False
+        self._play_last_tick = 0.0
+        self._play_frame_accumulator = 0.0
         self._updating_table = False
         self._detection_thread: Optional[QThread] = None
         self._detection_worker: Optional[FreezingDetectionWorker] = None
@@ -1159,6 +1162,8 @@ class QtAnnotationWorkbench(QMainWindow):
             self._pause_playback()
             return
         self.playing = True
+        self._play_last_tick = time.monotonic()
+        self._play_frame_accumulator = 0.0
         self.play_button.setText("暂停")
         self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
         self._restart_play_timer()
@@ -1179,6 +1184,9 @@ class QtAnnotationWorkbench(QMainWindow):
             return
         self.current_frame = max(0, min(int(frame), max(0, self.video_model.total_frames - 1)))
         self.video_model.current_frame = self.current_frame
+        if self.playing:
+            self._play_last_tick = time.monotonic()
+            self._play_frame_accumulator = 0.0
         self._render_current_frame()
 
     def _advance_playback(self):
@@ -1188,7 +1196,20 @@ class QtAnnotationWorkbench(QMainWindow):
             self._pause_playback()
             self.current_frame = max(0, self.video_model.total_frames - 1)
             return
-        self.current_frame += 1
+        now = time.monotonic()
+        elapsed = max(0.0, now - self._play_last_tick)
+        self._play_last_tick = now
+        speed = max(float(self.speed_combo.currentText().rstrip("x")), 0.01)
+        fps = max(self.video_model.video_fps, 1.0)
+        self._play_frame_accumulator += elapsed * fps * speed
+        frames_to_advance = int(self._play_frame_accumulator)
+        if frames_to_advance < 1:
+            return
+        self._play_frame_accumulator -= frames_to_advance
+        self.current_frame = min(
+            self.current_frame + frames_to_advance,
+            max(0, self.video_model.total_frames - 1),
+        )
         self.video_model.current_frame = self.current_frame
         self._render_current_frame()
         if self.current_frame >= self.video_model.total_frames - 1:
@@ -1213,14 +1234,15 @@ class QtAnnotationWorkbench(QMainWindow):
 
     def _pause_playback(self):
         self.playing = False
+        self._play_frame_accumulator = 0.0
         self.play_timer.stop()
         if hasattr(self, "play_button"):
             self.play_button.setText("播放")
             self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
 
     def _restart_play_timer(self):
-        speed = float(self.speed_combo.currentText().rstrip("x"))
-        delay = max(1, int(1000 / max(self.video_model.video_fps * speed, 1.0)))
+        self._play_last_tick = time.monotonic()
+        delay = max(1, int(1000 / max(self.video_model.video_fps, 1.0)))
         self.play_timer.start(delay)
 
     def _on_speed_changed(self):

@@ -95,14 +95,39 @@ class VideoService:
         """播放循环"""
         # 确保从当前帧开始播放
         with self.video_model._lock:
+            start_frame = self.video_model.current_frame
             if self.video_model.video_capture:
                 self.video_model.video_capture.set(
                     cv2.CAP_PROP_POS_FRAMES,
-                    self.video_model.current_frame
+                    start_frame
                 )
 
+        play_started_at = time.monotonic()
+        last_rendered_frame = start_frame - 1
+
         while self.video_model.video_playing and self.video_model.video_capture:
-            start_time = time.time()
+            fps = max(self.video_model.video_fps, 1.0)
+            speed = max(self.video_model.playback_speed, 0.01)
+            elapsed = time.monotonic() - play_started_at
+            target_frame = start_frame + int(elapsed * fps * speed)
+
+            if target_frame >= self.video_model.total_frames:
+                self.video_model.video_playing = False
+                if self._finished_callback:
+                    self._finished_callback()
+                break
+
+            if target_frame <= last_rendered_frame:
+                next_frame_at = play_started_at + (
+                    (last_rendered_frame + 1 - start_frame) / (fps * speed)
+                )
+                time.sleep(max(0.001, min(0.02, next_frame_at - time.monotonic())))
+                continue
+
+            with self.video_model._lock:
+                if self.video_model.video_capture:
+                    self.video_model.current_frame = target_frame
+                    self.video_model.video_capture.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
 
             ret, frame = self.video_model.read_frame()
             if not ret:
@@ -117,12 +142,7 @@ class VideoService:
                 current_time = self.video_model.current_time
                 self._frame_update_callback(frame, current_time)
 
-            # 控制播放速度（根据倍速调整帧延迟）
-            elapsed = time.time() - start_time
-            # 倍速越高，帧延迟越短
-            target_delay = 1.0 / (self.video_model.video_fps * self.video_model.playback_speed)
-            if elapsed < target_delay:
-                time.sleep(target_delay - elapsed)
+            last_rendered_frame = self.video_model.current_frame
 
     def release(self):
         """释放资源"""
